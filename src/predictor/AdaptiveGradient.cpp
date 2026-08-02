@@ -4,73 +4,58 @@
 
 namespace xtm::predictor {
 
-PredictionResult AdaptiveGradientPredictor::encode(const partition::BlockView& block) const {
-    PredictionResult result;
+namespace {
+inline int32_t adaptive_gradient_predict(int32_t W, int32_t N, int32_t NW) {
+    int32_t dh = std::abs(N - NW);
+    int32_t dv = std::abs(W - NW);
+    if (dh + dv == 0) return W;
+    return (W * dv + N * dh) / (dh + dv);
+}
+} // namespace
+
+void AdaptiveGradientPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
+    result.residuals.clear();
+    result.parameters.clear();
     result.residuals.reserve(block.width * block.height);
 
     for (uint32_t y = 0; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
+        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (uint32_t x = 0; x < block.width; ++x) {
-            int32_t val = block.get(x, y);
-            int32_t p = 0;
-
+            int32_t val = row[x];
+            int32_t p;
             if (x == 0 && y == 0) {
                 p = 0;
             } else if (y == 0) {
-                p = block.get(x - 1, 0);
+                p = (x > 0) ? row[x - 1] : 0;
             } else if (x == 0) {
-                p = block.get(0, y - 1);
+                p = above[0];
             } else {
-                int32_t W = block.get(x - 1, y);
-                int32_t N = block.get(x, y - 1);
-                int32_t NW = block.get(x - 1, y - 1);
-                
-                int32_t dh = std::abs(N - NW);
-                int32_t dv = std::abs(W - NW);
-                
-                if (dh + dv == 0) {
-                    p = W;
-                } else {
-                    // If dh is large (horizontal edge), we want to predict from N
-                    // If dv is large (vertical edge), we want to predict from W
-                    p = (W * dv + N * dh) / (dh + dv);
-                }
+                p = adaptive_gradient_predict(row[x - 1], above[x], above[x - 1]);
             }
-
             result.residuals.push_back(val - p);
         }
     }
-    return result;
+    return;
 }
 
 void AdaptiveGradientPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
     size_t i = 0;
     for (uint32_t y = 0; y < block.height; ++y) {
+        int32_t* row = block.row_data(y);
+        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (uint32_t x = 0; x < block.width; ++x) {
-            int32_t res = encoded.residuals[i++];
-            int32_t p = 0;
-
+            int32_t p;
             if (x == 0 && y == 0) {
                 p = 0;
             } else if (y == 0) {
-                p = block.get(x - 1, 0);
+                p = (x > 0) ? row[x - 1] : 0;
             } else if (x == 0) {
-                p = block.get(0, y - 1);
+                p = above[0];
             } else {
-                int32_t W = block.get(x - 1, y);
-                int32_t N = block.get(x, y - 1);
-                int32_t NW = block.get(x - 1, y - 1);
-                
-                int32_t dh = std::abs(N - NW);
-                int32_t dv = std::abs(W - NW);
-                
-                if (dh + dv == 0) {
-                    p = W;
-                } else {
-                    p = (W * dv + N * dh) / (dh + dv);
-                }
+                p = adaptive_gradient_predict(row[x - 1], above[x], above[x - 1]);
             }
-
-            block.set(x, y, p + res);
+            row[x] = encoded.residuals[i++] + p;
         }
     }
 }

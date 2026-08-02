@@ -11,8 +11,9 @@ static double det3(double m[3][3]) {
          + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 }
 
-PredictionResult LeastSquaresPredictor::encode(const partition::BlockView& block) const {
-    PredictionResult result;
+void LeastSquaresPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
+    result.residuals.clear();
+    result.parameters.clear();
     result.residuals.reserve(block.width * block.height);
     
     // We will fit weights w1, w2, w3 for W, N, NW
@@ -22,11 +23,13 @@ PredictionResult LeastSquaresPredictor::encode(const partition::BlockView& block
     double B[3] = {0};
     
     for (uint32_t y = 1; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
+        const int32_t* above = block.row_data(y - 1);
         for (uint32_t x = 1; x < block.width; ++x) {
-            double X = static_cast<double>(block.get(x, y));
-            double W = static_cast<double>(block.get(x-1, y));
-            double N = static_cast<double>(block.get(x, y-1));
-            double NW = static_cast<double>(block.get(x-1, y-1));
+            double X = static_cast<double>(row[x]);
+            double W = static_cast<double>(row[x - 1]);
+            double N = static_cast<double>(above[x]);
+            double NW = static_cast<double>(above[x - 1]);
             
             double C[3] = {W, N, NW};
             
@@ -70,20 +73,22 @@ PredictionResult LeastSquaresPredictor::encode(const partition::BlockView& block
     result.parameters = {qw1, qw2, qw3};
     
     for (uint32_t y = 0; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
+        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (uint32_t x = 0; x < block.width; ++x) {
-            int32_t val = block.get(x, y);
+            int32_t val = row[x];
             int32_t p = 0;
             
             if (x == 0 && y == 0) {
                 p = 0;
             } else if (y == 0) {
-                p = block.get(x - 1, 0);
+                p = row[x - 1];
             } else if (x == 0) {
-                p = block.get(0, y - 1);
+                p = above[0];
             } else {
-                int32_t W = block.get(x - 1, y);
-                int32_t N = block.get(x, y - 1);
-                int32_t NW = block.get(x - 1, y - 1);
+                int32_t W = row[x - 1];
+                int32_t N = above[x];
+                int32_t NW = above[x - 1];
                 
                 p = (qw1 * W + qw2 * N + qw3 * NW) / 256;
             }
@@ -92,7 +97,7 @@ PredictionResult LeastSquaresPredictor::encode(const partition::BlockView& block
         }
     }
     
-    return result;
+    return;
 }
 
 void LeastSquaresPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
@@ -105,6 +110,8 @@ void LeastSquaresPredictor::decode(const PredictionResult& encoded, partition::M
     
     size_t i = 0;
     for (uint32_t y = 0; y < block.height; ++y) {
+        int32_t* row = block.row_data(y);
+        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (uint32_t x = 0; x < block.width; ++x) {
             int32_t res = encoded.residuals[i++];
             int32_t p = 0;
@@ -112,18 +119,18 @@ void LeastSquaresPredictor::decode(const PredictionResult& encoded, partition::M
             if (x == 0 && y == 0) {
                 p = 0;
             } else if (y == 0) {
-                p = block.get(x - 1, 0);
+                p = row[x - 1];
             } else if (x == 0) {
-                p = block.get(0, y - 1);
+                p = above[0];
             } else {
-                int32_t W = block.get(x - 1, y);
-                int32_t N = block.get(x, y - 1);
-                int32_t NW = block.get(x - 1, y - 1);
+                int32_t W = row[x - 1];
+                int32_t N = above[x];
+                int32_t NW = above[x - 1];
                 
                 p = (qw1 * W + qw2 * N + qw3 * NW) / 256;
             }
             
-            block.set(x, y, p + res);
+            row[x] = p + res;
         }
     }
 }

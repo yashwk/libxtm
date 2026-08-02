@@ -17,11 +17,12 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
     int num_samples = block.width * block.height;
     
     // Quick Terrain Classification (V12.1)
-    int32_t min_val = block.grid->get(block.x_offset, block.y_offset);
+    int32_t min_val = block.row_data(0)[0];
     int32_t max_val = min_val;
     for (uint32_t y = 0; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
         for (uint32_t x = 0; x < block.width; ++x) {
-            int32_t val = block.grid->get(block.x_offset + x, block.y_offset + y);
+            int32_t val = row[x];
             if (val < min_val) min_val = val;
             if (val > max_val) max_val = val;
         }
@@ -55,7 +56,8 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
     
     if (pipeline_order_ == PipelineOrder::PredictorWavelet) {
         for (const auto* pred : active_predictors) {
-            auto encoded = pred->encode(block);
+            predictor::PredictionResult encoded;
+            pred->encode(block, encoded);
             
             double entropy = calculate_entropy(encoded.residuals);
             
@@ -80,16 +82,14 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
         }
         
         if (max_levels > 0) {
-            std::vector<int32_t> wv_residuals = best_result.best_encoded.residuals;
-            transform::CDF53Transform::forward_2d(wv_residuals, block.width, block.height, max_levels);
-            double wv_entropy = calculate_entropy(wv_residuals);
+            transform::CDF53Transform::forward_2d(best_result.best_encoded.residuals, block.width, block.height, max_levels);
+            double wv_entropy = calculate_entropy(best_result.best_encoded.residuals);
             double c_residual_wv = wv_entropy * num_samples;
             
             double wv_total_bits = 8.0 + (best_result.best_encoded.parameters.size() * 32.0) + c_residual_wv + 1.0; // +1 bit for wavelet flag
             
             if (wv_total_bits < best_result.total_bits) {
                 best_result.total_bits = wv_total_bits;
-                best_result.best_encoded.residuals = std::move(wv_residuals);
                 best_result.use_wavelet = true;
                 best_result.wavelet_levels = max_levels;
             } else {
@@ -97,6 +97,8 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
                 best_result.wavelet_levels = 0;
                 // Add the 1-bit flag overhead to the non-wavelet decision
                 best_result.total_bits += 1.0;
+                // Revert wavelet transform
+                transform::CDF53Transform::inverse_2d(best_result.best_encoded.residuals, block.width, block.height, max_levels);
             }
         } else {
             best_result.use_wavelet = false;
@@ -135,7 +137,8 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
         wv_block.height = block.height;
         
         for (const auto* pred : active_predictors) {
-            auto encoded = pred->encode(wv_block);
+            predictor::PredictionResult encoded;
+            pred->encode(wv_block, encoded);
             
             double entropy = calculate_entropy(encoded.residuals);
             

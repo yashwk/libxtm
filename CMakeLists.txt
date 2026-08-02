@@ -51,7 +51,7 @@ if(MSVC)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        add_compile_options(-O3 -march=native -mtune=native -ffast-math)
+        add_compile_options(-O3 -march=native -mtune=native)
     elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
         add_compile_options(-O2 -march=native -fno-omit-frame-pointer)
     endif()
@@ -107,6 +107,8 @@ add_executable(xtm
     apps/xtm/AnalyzeCmd.cpp
     apps/xtm/EncodeCmd.cpp
     apps/xtm/DecodeCmd.cpp
+    apps/xtm/InfoCmd.cpp
+    apps/xtm/VerifyCmd.cpp
 )
 target_link_libraries(xtm PRIVATE xtm_core Threads::Threads)
 

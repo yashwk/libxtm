@@ -48,8 +48,9 @@ private:
     uint32_t code_ = 0;
 };
 
-// Encodes a full 32-bit unsigned value using Magnitude Class + Raw Bits
+// Encodes a full 32-bit unsigned value using Magnitude Class + Raw Bits.
+// Not thread-safe against concurrent use of the same table; tables are per-stream.
 void encode_value(ArithmeticEncoder& ac, FrequencyTable& freqs, uint32_t val);
-uint32_t decode_value(ArithmeticDecoder& ac, FrequencyTable& freqs);
+uint32_t decode_value(ArithmeticDecoder& ad, FrequencyTable& freqs);
 
 } // namespace xtm::coding

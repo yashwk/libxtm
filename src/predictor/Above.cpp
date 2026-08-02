@@ -2,26 +2,32 @@
 
 namespace xtm::predictor {
 
-PredictionResult AbovePredictor::encode(const partition::BlockView& block) const {
-    PredictionResult result;
+void AbovePredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
+    result.residuals.clear();
+    result.parameters.clear();
     result.residuals.reserve(block.width * block.height);
     
+    const bool has_above_neighbor = block.global_y(0) > 0;
     for (std::uint32_t y = 0; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
+        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (std::uint32_t x = 0; x < block.width; ++x) {
-            int32_t X = block.get(x, y);
-            int32_t B = (block.global_y(y) > 0) ? block.get_global(block.global_x(x), block.global_y(y) - 1) : 0;
-            result.residuals.push_back(X - B);
+            int32_t B = above ? above[x] : (has_above_neighbor ? block.get_global(block.global_x(x), block.global_y(0) - 1) : 0);
+            result.residuals.push_back(row[x] - B);
         }
     }
-    return result;
+    return;
 }
 
 void AbovePredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
+    const bool has_above_neighbor = block.global_y(0) > 0;
+    size_t i = 0;
     for (std::uint32_t y = 0; y < block.height; ++y) {
+        int32_t* row = block.row_data(y);
+        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (std::uint32_t x = 0; x < block.width; ++x) {
-            int32_t R = encoded.residuals[y * block.width + x];
-            int32_t B = (block.global_y(y) > 0) ? block.get_global(block.global_x(x), block.global_y(y) - 1) : 0;
-            block.set(x, y, R + B);
+            int32_t B = above ? above[x] : (has_above_neighbor ? block.get_global(block.global_x(x), block.global_y(0) - 1) : 0);
+            row[x] = encoded.residuals[i++] + B;
         }
     }
 }

@@ -167,33 +167,22 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     ResidualDistributionStats r_dist_stats;
     
     std::size_t ll_zeros=0, lh_zeros=0, hl_zeros=0, hh_zeros=0;
-    std::vector<int32_t> ll_all, lh_all, hl_all, hh_all;
+    std::unordered_map<int32_t, std::size_t> ll_map, lh_map, hl_map, hh_map;
+    std::size_t ll_count=0, lh_count=0, hl_count=0, hh_count=0;
     std::size_t total_zero_runs=0, total_zero_run_length=0;
     std::size_t total_symbols=0, total_contexts=0;
     std::unordered_map<coding::Context, std::size_t> global_context_sizes;
     
-    std::vector<int32_t> global_grad_res;
+    
     std::size_t easy_count=0, medium_count=0, hard_count=0;
     double easy_entropy=0, medium_entropy=0, hard_entropy=0;
     std::size_t exact=0, w1=0, w2=0, w5=0, w10=0, res_count=0;
     std::unordered_map<int32_t, std::size_t> histogram;
 
     auto worker = [&]() {
-        predictor::LeftPredictor p_left;
-        predictor::AbovePredictor p_above;
-        predictor::AveragePredictor p_avg;
-        predictor::GradientPredictor p_grad;
-        predictor::JpegLsPredictor p_jpegls;
-        predictor::PlanePredictor p_plane;
-        predictor::GapPredictor p_gap;
-        predictor::AdaptiveGradientPredictor p_adap_grad;
-        predictor::LeastSquaresPredictor p_least_squares;
-        predictor::SecondOrderPredictor p_second_order;
-        predictor::LocalSlopePredictor p_local_slope;
+        predictor::PredictorBank bank;
         
-        std::vector<const predictor::Predictor*> pred_list = {
-            &p_left, &p_above, &p_avg, &p_grad, &p_jpegls, &p_plane, &p_gap, &p_adap_grad, &p_least_squares, &p_second_order, &p_local_slope
-        };
+        std::vector<const predictor::Predictor*> pred_list = bank.ordered();
         PredictorSelector selector(pred_list);
         
         std::unordered_map<int32_t, std::size_t> l_glob_left, l_glob_above, l_glob_avg, l_glob_grad, l_glob_jpegls, l_glob_plane, l_glob_gap, l_glob_adap_grad, l_glob_least_squares, l_glob_second_order, l_glob_local_slope;
@@ -212,11 +201,12 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
         ResidualDistributionStats l_r_dist_stats;
         
         std::size_t l_ll_zeros=0, l_lh_zeros=0, l_hl_zeros=0, l_hh_zeros=0;
-        std::vector<int32_t> l_ll_all, l_lh_all, l_hl_all, l_hh_all;
+        std::unordered_map<int32_t, std::size_t> l_ll_map, l_lh_map, l_hl_map, l_hh_map;
+        std::size_t l_ll_count=0, l_lh_count=0, l_hl_count=0, l_hh_count=0;
         std::size_t l_total_zero_runs=0, l_total_zero_run_length=0;
         std::size_t l_total_symbols=0, l_total_contexts=0;
         std::unordered_map<coding::Context, std::size_t> l_global_context_sizes;
-        std::vector<int32_t> l_global_grad_res;
+        
         std::size_t l_easy_count=0, l_medium_count=0, l_hard_count=0;
         double l_easy_entropy=0, l_medium_entropy=0, l_hard_entropy=0;
         std::size_t l_exact=0, l_w1=0, l_w2=0, l_w5=0, l_w10=0, l_res_count=0;
@@ -249,32 +239,44 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
                 for (int32_t r : res) counts[r]++;
             };
             
-            auto l_glob = p_left.encode(full_sb); accumulate(l_glob.residuals, l_glob_left);
-            auto a_glob = p_above.encode(full_sb); accumulate(a_glob.residuals, l_glob_above);
-            auto v_glob = p_avg.encode(full_sb); accumulate(v_glob.residuals, l_glob_avg);
-            auto g_glob = p_grad.encode(full_sb); accumulate(g_glob.residuals, l_glob_grad); l_global_grad_res.insert(l_global_grad_res.end(), g_glob.residuals.begin(), g_glob.residuals.end());
-            auto j_glob = p_jpegls.encode(full_sb); accumulate(j_glob.residuals, l_glob_jpegls);
-            auto pl_glob = p_plane.encode(full_sb); accumulate(pl_glob.residuals, l_glob_plane);
-            auto gp_glob = p_gap.encode(full_sb); accumulate(gp_glob.residuals, l_glob_gap);
-            auto ag_glob = p_adap_grad.encode(full_sb); accumulate(ag_glob.residuals, l_glob_adap_grad);
-            auto ls_glob = p_least_squares.encode(full_sb); accumulate(ls_glob.residuals, l_glob_least_squares);
-            auto so_glob = p_second_order.encode(full_sb); accumulate(so_glob.residuals, l_glob_second_order);
-            auto lsp_glob = p_local_slope.encode(full_sb); accumulate(lsp_glob.residuals, l_glob_local_slope);
+            predictor::PredictionResult l_glob;
+            bank.left->encode(full_sb, l_glob); accumulate(l_glob.residuals, l_glob_left);
+            predictor::PredictionResult a_glob;
+            bank.above->encode(full_sb, a_glob); accumulate(a_glob.residuals, l_glob_above);
+            predictor::PredictionResult v_glob;
+            bank.average->encode(full_sb, v_glob); accumulate(v_glob.residuals, l_glob_avg);
+            predictor::PredictionResult g_glob;
+            bank.gradient->encode(full_sb, g_glob); accumulate(g_glob.residuals, l_glob_grad);
+            predictor::PredictionResult j_glob;
+            bank.jpegls->encode(full_sb, j_glob); accumulate(j_glob.residuals, l_glob_jpegls);
+            predictor::PredictionResult pl_glob;
+            bank.plane->encode(full_sb, pl_glob); accumulate(pl_glob.residuals, l_glob_plane);
+            predictor::PredictionResult gp_glob;
+            bank.gap->encode(full_sb, gp_glob); accumulate(gp_glob.residuals, l_glob_gap);
+            predictor::PredictionResult ag_glob;
+            bank.adaptive_gradient->encode(full_sb, ag_glob); accumulate(ag_glob.residuals, l_glob_adap_grad);
+            predictor::PredictionResult ls_glob;
+            bank.least_squares->encode(full_sb, ls_glob); accumulate(ls_glob.residuals, l_glob_least_squares);
+            predictor::PredictionResult so_glob;
+            bank.second_order->encode(full_sb, so_glob); accumulate(so_glob.residuals, l_glob_second_order);
+            predictor::PredictionResult lsp_glob;
+            bank.local_slope->encode(full_sb, lsp_glob); accumulate(lsp_glob.residuals, l_glob_local_slope);
             
             const terrain::IntGrid& const_sgrid = sgrid;
             auto blocks64 = partition::FixedGridPartitioner::partition(const_sgrid, 64);
             for (const auto& b : blocks64) {
-                accumulate(p_left.encode(b).residuals, l_64_left);
-                accumulate(p_above.encode(b).residuals, l_64_above);
-                accumulate(p_avg.encode(b).residuals, l_64_avg);
-                accumulate(p_grad.encode(b).residuals, l_64_grad);
-                accumulate(p_jpegls.encode(b).residuals, l_64_jpegls);
-                accumulate(p_plane.encode(b).residuals, l_64_plane);
-                accumulate(p_gap.encode(b).residuals, l_64_gap);
-                accumulate(p_adap_grad.encode(b).residuals, l_64_adap_grad);
-                accumulate(p_least_squares.encode(b).residuals, l_64_least_squares);
-                accumulate(p_second_order.encode(b).residuals, l_64_second_order);
-                accumulate(p_local_slope.encode(b).residuals, l_64_local_slope);
+                predictor::PredictionResult scratch;
+                bank.left->encode(b, scratch); accumulate(scratch.residuals, l_64_left);
+                bank.above->encode(b, scratch); accumulate(scratch.residuals, l_64_above);
+                bank.average->encode(b, scratch); accumulate(scratch.residuals, l_64_avg);
+                bank.gradient->encode(b, scratch); accumulate(scratch.residuals, l_64_grad);
+                bank.jpegls->encode(b, scratch); accumulate(scratch.residuals, l_64_jpegls);
+                bank.plane->encode(b, scratch); accumulate(scratch.residuals, l_64_plane);
+                bank.gap->encode(b, scratch); accumulate(scratch.residuals, l_64_gap);
+                bank.adaptive_gradient->encode(b, scratch); accumulate(scratch.residuals, l_64_adap_grad);
+                bank.least_squares->encode(b, scratch); accumulate(scratch.residuals, l_64_least_squares);
+                bank.second_order->encode(b, scratch); accumulate(scratch.residuals, l_64_second_order);
+                bank.local_slope->encode(b, scratch); accumulate(scratch.residuals, l_64_local_slope);
                 
                 auto res = selector.select(b);
                 l_total_adaptive_64_bits += res.total_bits;
@@ -314,17 +316,17 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
                     mag_sum /= leaf.selection.best_encoded.residuals.size();
                 }
                 
-                if (leaf.selection.best_predictor == &p_left) { l_p_usage.left_count++; l_p_usage.left_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_above) { l_p_usage.above_count++; l_p_usage.above_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_avg) { l_p_usage.average_count++; l_p_usage.average_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_grad) { l_p_usage.gradient_count++; l_p_usage.gradient_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_jpegls) { l_p_usage.jpegls_count++; l_p_usage.jpegls_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_plane) { l_p_usage.plane_count++; l_p_usage.plane_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_gap) { l_p_usage.gap_count++; l_p_usage.gap_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_adap_grad) { l_p_usage.adaptive_gradient_count++; l_p_usage.adaptive_gradient_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_least_squares) { l_p_usage.least_squares_count++; l_p_usage.least_squares_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_second_order) { l_p_usage.second_order_count++; l_p_usage.second_order_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == &p_local_slope) { l_p_usage.local_slope_count++; l_p_usage.local_slope_mag_sum += mag_sum; }
+                if (leaf.selection.best_predictor == bank.left.get()) { l_p_usage.left_count++; l_p_usage.left_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.above.get()) { l_p_usage.above_count++; l_p_usage.above_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.average.get()) { l_p_usage.average_count++; l_p_usage.average_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.gradient.get()) { l_p_usage.gradient_count++; l_p_usage.gradient_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.jpegls.get()) { l_p_usage.jpegls_count++; l_p_usage.jpegls_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.plane.get()) { l_p_usage.plane_count++; l_p_usage.plane_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.gap.get()) { l_p_usage.gap_count++; l_p_usage.gap_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.adaptive_gradient.get()) { l_p_usage.adaptive_gradient_count++; l_p_usage.adaptive_gradient_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.least_squares.get()) { l_p_usage.least_squares_count++; l_p_usage.least_squares_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.second_order.get()) { l_p_usage.second_order_count++; l_p_usage.second_order_mag_sum += mag_sum; }
+                else if (leaf.selection.best_predictor == bank.local_slope.get()) { l_p_usage.local_slope_count++; l_p_usage.local_slope_mag_sum += mag_sum; }
 
                 uint32_t w = leaf.block.width;
                 if (w == 512) l_q_stats.size_512_count++;
@@ -374,10 +376,10 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
                         else if (sym.context.subband == 3) l_hh_zeros += sym.run_length;
                         
                         for (uint32_t i=0; i < sym.run_length; ++i) {
-                            if (sym.context.subband == 0) l_ll_all.push_back(0);
-                            else if (sym.context.subband == 1) l_lh_all.push_back(0);
-                            else if (sym.context.subband == 2) l_hl_all.push_back(0);
-                            else if (sym.context.subband == 3) l_hh_all.push_back(0);
+                            if (sym.context.subband == 0) { l_ll_map[0]++; l_ll_count++; }
+                            else if (sym.context.subband == 1) { l_lh_map[0]++; l_lh_count++; }
+                            else if (sym.context.subband == 2) { l_hl_map[0]++; l_hl_count++; }
+                            else if (sym.context.subband == 3) { l_hh_map[0]++; l_hh_count++; }
                         }
                     } else {
                         if (sym.magnitude_class > 1) {
@@ -387,10 +389,10 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
                         uint32_t zz = (1u << (sym.magnitude_class - 1)) | sym.remainder;
                         int32_t val = (zz >> 1) ^ -(zz & 1); // inverse zigzag
                         
-                        if (sym.context.subband == 0) l_ll_all.push_back(val);
-                        else if (sym.context.subband == 1) l_lh_all.push_back(val);
-                        else if (sym.context.subband == 2) l_hl_all.push_back(val);
-                        else if (sym.context.subband == 3) l_hh_all.push_back(val);
+                        if (sym.context.subband == 0) { l_ll_map[val]++; l_ll_count++; }
+                        else if (sym.context.subband == 1) { l_lh_map[val]++; l_lh_count++; }
+                        else if (sym.context.subband == 2) { l_hl_map[val]++; l_hl_count++; }
+                        else if (sym.context.subband == 3) { l_hh_map[val]++; l_hh_count++; }
                     }
                     
                     l_global_context_sizes[sym.context]++;
@@ -463,10 +465,12 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
         p_usage.local_slope_count += l_p_usage.local_slope_count; p_usage.local_slope_mag_sum += l_p_usage.local_slope_mag_sum;
         
         ll_zeros += l_ll_zeros; lh_zeros += l_lh_zeros; hl_zeros += l_hl_zeros; hh_zeros += l_hh_zeros;
-        ll_all.insert(ll_all.end(), l_ll_all.begin(), l_ll_all.end());
-        lh_all.insert(lh_all.end(), l_lh_all.begin(), l_lh_all.end());
-        hl_all.insert(hl_all.end(), l_hl_all.begin(), l_hl_all.end());
-        hh_all.insert(hh_all.end(), l_hh_all.begin(), l_hh_all.end());
+        
+        for (const auto& kv : l_ll_map) { ll_map[kv.first] += kv.second; } ll_count += l_ll_count;
+        for (const auto& kv : l_lh_map) { lh_map[kv.first] += kv.second; } lh_count += l_lh_count;
+        for (const auto& kv : l_hl_map) { hl_map[kv.first] += kv.second; } hl_count += l_hl_count;
+        for (const auto& kv : l_hh_map) { hh_map[kv.first] += kv.second; } hh_count += l_hh_count;
+
         total_zero_runs += l_total_zero_runs;
         total_zero_run_length += l_total_zero_run_length;
         w_stats.max_zero_run = std::max(w_stats.max_zero_run, l_w_stats.max_zero_run);
@@ -476,7 +480,7 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
         for (const auto& kv : l_global_context_sizes) {
             global_context_sizes[kv.first] += kv.second;
         }
-        global_grad_res.insert(global_grad_res.end(), l_global_grad_res.begin(), l_global_grad_res.end());
+        
         easy_count += l_easy_count; medium_count += l_medium_count; hard_count += l_hard_count;
         easy_entropy += l_easy_entropy; medium_entropy += l_medium_entropy; hard_entropy += l_hard_entropy;
         exact += l_exact; w1 += l_w1; w2 += l_w2; w5 += l_w5; w10 += l_w10; res_count += l_res_count;
@@ -545,36 +549,59 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     report.quadtree_entropy = quad_bits_total / grid_samples;
     report.dwt_quadtree_entropy = (dwt_bits_total + quad_overhead_total) / grid_samples;
     
-    compute_correlation(global_grad_res.data(), grid.width, grid.height,
-                        report.correlation_stats.residual_horizontal,
-                        report.correlation_stats.residual_vertical,
-                        report.correlation_stats.residual_diagonal);
+    {
+        predictor::PredictorBank temp_bank;
+        predictor::PredictionResult temp_res;
+
+        temp_bank.gradient->encode(partition::BlockView{&grid, 0, 0, grid.width, grid.height}, temp_res);
+        compute_correlation(temp_res.residuals.data(), grid.width, grid.height, 
+                            report.correlation_stats.residual_horizontal, 
+                            report.correlation_stats.residual_vertical, 
+                            report.correlation_stats.residual_diagonal);
+    }
                         
     double res_mean = 0;
     size_t res_zeros = 0;
-    for (int32_t r : global_grad_res) {
-        res_mean += std::abs(r);
-        if (r == 0) res_zeros++;
+    std::size_t grad_count = 0;
+    for (const auto& kv : glob_grad_counts) {
+        if (kv.first == 0) res_zeros += kv.second;
+        res_mean += std::abs(kv.first) * kv.second;
+        grad_count += kv.second;
     }
-    if (!global_grad_res.empty()) res_mean /= global_grad_res.size();
+    if (grad_count > 0) res_mean /= grad_count;
     report.residual_dist_stats.mean_abs = res_mean;
-    if (!global_grad_res.empty()) report.residual_dist_stats.zero_pct = (double)res_zeros / global_grad_res.size() * 100.0;
+    if (grad_count > 0) report.residual_dist_stats.zero_pct = (double)res_zeros / grad_count * 100.0;
     
     double res_var = 0;
-    for (int32_t r : global_grad_res) {
-        double d = std::abs(r) - res_mean;
-        res_var += d * d;
+    for (const auto& kv : glob_grad_counts) {
+        double d = std::abs(kv.first) - res_mean;
+        res_var += (d * d) * kv.second;
     }
-    if (!global_grad_res.empty()) report.residual_dist_stats.variance = res_var / global_grad_res.size();
+    if (grad_count > 0) report.residual_dist_stats.variance = res_var / grad_count;
     
-    std::sort(global_grad_res.begin(), global_grad_res.end(), [](int32_t a, int32_t b) {
-        return std::abs(a) < std::abs(b);
-    });
-    if (!global_grad_res.empty()) {
-        report.residual_dist_stats.median = std::abs(global_grad_res[global_grad_res.size() / 2]);
-        report.residual_dist_stats.p95 = std::abs(global_grad_res[(global_grad_res.size() * 95) / 100]);
-        report.residual_dist_stats.p99 = std::abs(global_grad_res[(global_grad_res.size() * 99) / 100]);
-        report.residual_dist_stats.max_val = std::abs(global_grad_res.back());
+    if (grad_count > 0) {
+        std::vector<std::pair<int32_t, std::size_t>> sorted_grad(glob_grad_counts.begin(), glob_grad_counts.end());
+        std::sort(sorted_grad.begin(), sorted_grad.end(), [](const auto& a, const auto& b) {
+            return std::abs(a.first) < std::abs(b.first);
+        });
+        std::size_t accum = 0;
+        bool med_found = false, p95_found = false, p99_found = false;
+        for (const auto& kv : sorted_grad) {
+            accum += kv.second;
+            if (!med_found && accum >= grad_count / 2) {
+                report.residual_dist_stats.median = std::abs(kv.first);
+                med_found = true;
+            }
+            if (!p95_found && accum >= (grad_count * 95) / 100) {
+                report.residual_dist_stats.p95 = std::abs(kv.first);
+                p95_found = true;
+            }
+            if (!p99_found && accum >= (grad_count * 99) / 100) {
+                report.residual_dist_stats.p99 = std::abs(kv.first);
+                p99_found = true;
+            }
+        }
+        report.residual_dist_stats.max_val = std::abs(sorted_grad.back().first);
     }
     
     double max_res_corr = std::max({
@@ -587,43 +614,43 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     // If correlation is near 0, the residuals are noise and DWT will just expand entropy.
     report.transform_eval_stats.decision_use_wavelet = (max_res_corr > 0.3);
     
-    if (!ll_all.empty()) report.wavelet_stats.ll_count = ll_all.size();
-    report.wavelet_stats.lh_count = lh_all.size();
-    report.wavelet_stats.hl_count = hl_all.size();
-    report.wavelet_stats.hh_count = hh_all.size();
-    if (!ll_all.empty()) report.wavelet_stats.ll_zero_pct = (double)ll_zeros / ll_all.size() * 100.0;
-    if (!lh_all.empty()) report.wavelet_stats.lh_zero_pct = (double)lh_zeros / lh_all.size() * 100.0;
-    if (!hl_all.empty()) report.wavelet_stats.hl_zero_pct = (double)hl_zeros / hl_all.size() * 100.0;
-    if (!hh_all.empty()) report.wavelet_stats.hh_zero_pct = (double)hh_zeros / hh_all.size() * 100.0;
+    if (ll_count > 0) report.wavelet_stats.ll_count = ll_count;
+    report.wavelet_stats.lh_count = lh_count;
+    report.wavelet_stats.hl_count = hl_count;
+    report.wavelet_stats.hh_count = hh_count;
+    if (ll_count > 0) report.wavelet_stats.ll_zero_pct = (double)ll_zeros / ll_count * 100.0;
+    if (lh_count > 0) report.wavelet_stats.lh_zero_pct = (double)lh_zeros / lh_count * 100.0;
+    if (hl_count > 0) report.wavelet_stats.hl_zero_pct = (double)hl_zeros / hl_count * 100.0;
+    if (hh_count > 0) report.wavelet_stats.hh_zero_pct = (double)hh_zeros / hh_count * 100.0;
     
-    report.wavelet_stats.ll_entropy = calculate_entropy(ll_all);
-    report.wavelet_stats.lh_entropy = calculate_entropy(lh_all);
-    report.wavelet_stats.hl_entropy = calculate_entropy(hl_all);
-    report.wavelet_stats.hh_entropy = calculate_entropy(hh_all);
+    report.wavelet_stats.ll_entropy = calculate_entropy(ll_map, ll_count);
+    report.wavelet_stats.lh_entropy = calculate_entropy(lh_map, lh_count);
+    report.wavelet_stats.hl_entropy = calculate_entropy(hl_map, hl_count);
+    report.wavelet_stats.hh_entropy = calculate_entropy(hh_map, hh_count);
     
-    auto compute_subband_metrics = [](const std::vector<int32_t>& sb, double& mean, double& var, double& energy) {
-        if (sb.empty()) return;
+    auto compute_subband_metrics = [](const std::unordered_map<int32_t, std::size_t>& counts, std::size_t count, double& mean, double& var, double& energy) {
+        if (count == 0) return;
         double sum = 0, e_sum = 0;
-        for (int32_t v : sb) {
-            double av = std::abs(v);
-            sum += av;
-            e_sum += av * av;
+        for (const auto& kv : counts) {
+            double av = std::abs(kv.first);
+            sum += av * kv.second;
+            e_sum += (av * av) * kv.second;
         }
-        mean = sum / sb.size();
+        mean = sum / count;
         energy = e_sum;
         double v_sum = 0;
-        for (int32_t v : sb) {
-            double d = std::abs(v) - mean;
-            v_sum += d * d;
+        for (const auto& kv : counts) {
+            double d = std::abs(kv.first) - mean;
+            v_sum += (d * d) * kv.second;
         }
-        var = v_sum / sb.size();
+        var = v_sum / count;
     };
     
     double ll_e=0, lh_e=0, hl_e=0, hh_e=0;
-    compute_subband_metrics(ll_all, report.wavelet_stats.ll_mean_mag, report.wavelet_stats.ll_var, ll_e);
-    compute_subband_metrics(lh_all, report.wavelet_stats.lh_mean_mag, report.wavelet_stats.lh_var, lh_e);
-    compute_subband_metrics(hl_all, report.wavelet_stats.hl_mean_mag, report.wavelet_stats.hl_var, hl_e);
-    compute_subband_metrics(hh_all, report.wavelet_stats.hh_mean_mag, report.wavelet_stats.hh_var, hh_e);
+    compute_subband_metrics(ll_map, ll_count, report.wavelet_stats.ll_mean_mag, report.wavelet_stats.ll_var, ll_e);
+    compute_subband_metrics(lh_map, lh_count, report.wavelet_stats.lh_mean_mag, report.wavelet_stats.lh_var, lh_e);
+    compute_subband_metrics(hl_map, hl_count, report.wavelet_stats.hl_mean_mag, report.wavelet_stats.hl_var, hl_e);
+    compute_subband_metrics(hh_map, hh_count, report.wavelet_stats.hh_mean_mag, report.wavelet_stats.hh_var, hh_e);
     
     double total_energy = ll_e + lh_e + hl_e + hh_e;
     if (total_energy > 0) {
@@ -633,18 +660,30 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
         report.wavelet_stats.hh_energy_pct = (hh_e / total_energy) * 100.0;
     }
     
-    std::vector<int32_t> all_coeffs;
-    all_coeffs.reserve(ll_all.size() + lh_all.size() + hl_all.size() + hh_all.size());
-    all_coeffs.insert(all_coeffs.end(), ll_all.begin(), ll_all.end());
-    all_coeffs.insert(all_coeffs.end(), lh_all.begin(), lh_all.end());
-    all_coeffs.insert(all_coeffs.end(), hl_all.begin(), hl_all.end());
-    all_coeffs.insert(all_coeffs.end(), hh_all.begin(), hh_all.end());
-    std::sort(all_coeffs.begin(), all_coeffs.end(), [](int32_t a, int32_t b) {
-        return std::abs(a) < std::abs(b);
-    });
-    if (!all_coeffs.empty()) {
-        report.wavelet_stats.p95_coeff = std::abs(all_coeffs[(all_coeffs.size() * 95) / 100]);
-        report.wavelet_stats.p99_coeff = std::abs(all_coeffs[(all_coeffs.size() * 99) / 100]);
+    std::unordered_map<int32_t, std::size_t> all_coeffs_map;
+    for (const auto& kv : ll_map) all_coeffs_map[kv.first] += kv.second;
+    for (const auto& kv : lh_map) all_coeffs_map[kv.first] += kv.second;
+    for (const auto& kv : hl_map) all_coeffs_map[kv.first] += kv.second;
+    for (const auto& kv : hh_map) all_coeffs_map[kv.first] += kv.second;
+    std::size_t total_wv_count = ll_count + lh_count + hl_count + hh_count;
+    if (total_wv_count > 0) {
+        std::vector<std::pair<int32_t, std::size_t>> sorted_wv(all_coeffs_map.begin(), all_coeffs_map.end());
+        std::sort(sorted_wv.begin(), sorted_wv.end(), [](const auto& a, const auto& b) {
+            return std::abs(a.first) < std::abs(b.first);
+        });
+        std::size_t accum = 0;
+        bool p95_found = false, p99_found = false;
+        for (const auto& kv : sorted_wv) {
+            accum += kv.second;
+            if (!p95_found && accum >= (total_wv_count * 95) / 100) {
+                report.wavelet_stats.p95_coeff = std::abs(kv.first);
+                p95_found = true;
+            }
+            if (!p99_found && accum >= (total_wv_count * 99) / 100) {
+                report.wavelet_stats.p99_coeff = std::abs(kv.first);
+                p99_found = true;
+            }
+        }
     }
     
     if (total_zero_runs > 0) {

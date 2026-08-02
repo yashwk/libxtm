@@ -93,23 +93,15 @@ int run_encode(int argc, char** argv) {
         auto t_quant_end = high_resolution_clock::now();
         double time_quant = duration<double, std::milli>(t_quant_end - t_quant_start).count();
         
-        predictor::LeftPredictor p_left;
-        predictor::AbovePredictor p_above;
-        predictor::AveragePredictor p_avg;
-        predictor::GradientPredictor p_grad;
-        predictor::JpegLsPredictor p_jpegls;
-        predictor::PlanePredictor p_plane;
-        predictor::GapPredictor p_gap;
-        predictor::AdaptiveGradientPredictor p_adap_grad;
-        predictor::LeastSquaresPredictor p_least_squares;
-        predictor::SecondOrderPredictor p_second_order;
-        predictor::LocalSlopePredictor p_local_slope;
+        predictor::PredictorBank bank;
+        std::vector<const predictor::Predictor*> predictors_list = bank.ordered();
         
         container::XtmHeader header;
         header.grid_width = cgrid.width;
         header.grid_height = cgrid.height;
         header.res_x = scale;
         header.res_y = scale;
+        header.context_model = (model == coding::ContextModel::Extended) ? 1 : 0;
         if (buffer.nodata_value.has_value()) {
             header.flags |= container::XtmHeader::FLAG_HAS_NODATA;
             header.nodata_value = *buffer.nodata_value;
@@ -131,12 +123,7 @@ int run_encode(int argc, char** argv) {
         
         container::XtmWriter writer(output_file, header);
         
-        std::vector<const predictor::Predictor*> predictors_list = {
-            &p_grad, &p_left, &p_above, &p_avg, &p_jpegls, &p_plane, &p_gap, &p_adap_grad, &p_least_squares, &p_second_order, &p_local_slope
-        };
-        
         analyzer::PredictorSelector selector(predictors_list, 10.0, pipeline_order);
-        coding::FrequencyTable freqs(33);
         
         std::uint32_t superblock_size = 512;
         std::uint32_t total_blocks = 0;
@@ -386,6 +373,9 @@ int run_encode(int argc, char** argv) {
                       << "    Average Entropy:    " << kv.second.sum_entropy / count << "\n"
                       << "    Mean Absolute Res:  " << kv.second.sum_mean_abs / count << "\n"
                       << "    Residual Variance:  " << kv.second.sum_variance / count << "\n";
+            // Machine-readable summary consumed by utils/benchmark_suite.py
+            std::cout << "Predictor " << kv.first << ": " << count << " blocks ("
+                      << (double)count / total_blocks * 100.0 << "%)\n";
         }
         std::cout << "============================\n";
         

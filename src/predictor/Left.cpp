@@ -2,26 +2,32 @@
 
 namespace xtm::predictor {
 
-PredictionResult LeftPredictor::encode(const partition::BlockView& block) const {
-    PredictionResult result;
+void LeftPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
+    result.residuals.clear();
+    result.parameters.clear();
     result.residuals.reserve(block.width * block.height);
     
+    const bool has_left_neighbor = block.global_x(0) > 0;
     for (std::uint32_t y = 0; y < block.height; ++y) {
-        for (std::uint32_t x = 0; x < block.width; ++x) {
-            int32_t X = block.get(x, y);
-            int32_t C = (block.global_x(x) > 0) ? block.get_global(block.global_x(x) - 1, block.global_y(y)) : 0;
-            result.residuals.push_back(X - C);
+        const int32_t* row = block.row_data(y);
+        int32_t C = has_left_neighbor ? block.get_global(block.global_x(0) - 1, block.global_y(y)) : 0;
+        result.residuals.push_back(row[0] - C);
+        for (std::uint32_t x = 1; x < block.width; ++x) {
+            result.residuals.push_back(row[x] - row[x - 1]);
         }
     }
-    return result;
+    return;
 }
 
 void LeftPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
+    const bool has_left_neighbor = block.global_x(0) > 0;
+    size_t i = 0;
     for (std::uint32_t y = 0; y < block.height; ++y) {
-        for (std::uint32_t x = 0; x < block.width; ++x) {
-            int32_t R = encoded.residuals[y * block.width + x];
-            int32_t C = (block.global_x(x) > 0) ? block.get_global(block.global_x(x) - 1, block.global_y(y)) : 0;
-            block.set(x, y, R + C);
+        int32_t* row = block.row_data(y);
+        int32_t C = has_left_neighbor ? block.get_global(block.global_x(0) - 1, block.global_y(y)) : 0;
+        row[0] = encoded.residuals[i++] + C;
+        for (std::uint32_t x = 1; x < block.width; ++x) {
+            row[x] = encoded.residuals[i++] + row[x - 1];
         }
     }
 }

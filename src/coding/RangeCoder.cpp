@@ -86,13 +86,18 @@ uint32_t ArithmeticDecoder::decode(FrequencyTable& freqs) {
     
     uint64_t scaled_value = ((static_cast<uint64_t>(code_) - low_ + 1) * total - 1) / range;
     
-    uint32_t symbol = 0;
-    for (uint32_t i = 0; i < freqs.get_num_symbols(); ++i) {
-        if (scaled_value >= freqs.get_low(i) && scaled_value < freqs.get_high(i)) {
-            symbol = i;
-            break;
+    // cum_freq_ is non-decreasing with cum[0]=0 and cum[N]=total, so the
+    // containing symbol can be found by binary search: largest s with cum[s] <= scaled_value.
+    uint32_t lo = 0, hi = freqs.get_num_symbols();
+    while (lo + 1 < hi) {
+        uint32_t mid = (lo + hi) / 2;
+        if (freqs.get_low(mid) <= scaled_value) {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
+    uint32_t symbol = lo;
     
     uint32_t sym_low = freqs.get_low(symbol);
     uint32_t sym_high = freqs.get_high(symbol);
@@ -129,7 +134,8 @@ void encode_value(ArithmeticEncoder& ac, FrequencyTable& freqs, uint32_t val) {
     freqs.increment(mag);
     
     if (mag > 1) {
-        static FrequencyTable uniform_bit(2); // 0 and 1 equally probable
+        // Never mutated, so per-call instances stay identical on both sides
+        FrequencyTable uniform_bit(2); // 0 and 1 equally probable
         uint32_t remainder = val & ((1u << (mag - 1)) - 1);
         for (int i = mag - 2; i >= 0; --i) {
             uint32_t bit = (remainder >> i) & 1;
@@ -145,7 +151,7 @@ uint32_t decode_value(ArithmeticDecoder& ad, FrequencyTable& freqs) {
     if (mag == 0) return 0;
     if (mag == 1) return 1;
     
-    static FrequencyTable uniform_bit(2);
+    FrequencyTable uniform_bit(2);
     uint32_t remainder = 0;
     for (int i = mag - 2; i >= 0; --i) {
         uint32_t bit = ad.decode(uniform_bit);

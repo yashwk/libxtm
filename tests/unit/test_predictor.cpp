@@ -29,7 +29,8 @@ void test_roundtrip(const predictor::Predictor& pred, uint32_t width, uint32_t h
     block.width = width;
     block.height = height;
     
-    auto encoded = pred.encode(block);
+    predictor::PredictionResult encoded;
+    pred.encode(block, encoded);
     ASSERT_EQ(encoded.residuals.size(), original.data.size());
     
     terrain::IntGrid decoded_grid;

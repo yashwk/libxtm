@@ -15,8 +15,8 @@ public:
     static void inverse_2d(std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t levels);
 
 private:
-    static void forward_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length);
-    static void inverse_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length);
+    static void forward_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length, std::vector<int32_t>& scratch);
+    static void inverse_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length, std::vector<int32_t>& scratch);
 };
 
 } // namespace xtm::transform

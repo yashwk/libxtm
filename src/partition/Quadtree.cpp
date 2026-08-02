@@ -32,6 +32,14 @@ void partition_recursive(
         return;
     }
 
+    // Heuristic: If parent entropy is already very low, splitting won't help much.
+    // E.g., < 1.0 bits per pixel means it's highly compressible already.
+    if (parent_sel.total_bits < (width * height * 1.0)) {
+        leaf_nodes.push_back({parent_block, std::move(parent_sel), false});
+        accumulated_bits += parent_sel.total_bits + cost_split_flag;
+        return;
+    }
+
     std::uint32_t w1 = width / 2;
     std::uint32_t w2 = width - w1;
     std::uint32_t h1 = height / 2;

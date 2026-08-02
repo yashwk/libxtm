@@ -29,6 +29,7 @@ int run_decode(int argc, char** argv) {
     int rx = 0, ry = 0, rw = 0, rh = 0;
     bool has_roi = false;
     coding::ContextModel model = coding::ContextModel::Simple;
+    bool model_overridden = false;
     
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -48,6 +49,7 @@ int run_decode(int argc, char** argv) {
                 std::cerr << "Unknown context model: " << ctype << "\n";
                 return 1;
             }
+            model_overridden = true;
         }
     }
     
@@ -64,6 +66,13 @@ int run_decode(int argc, char** argv) {
         const auto& header = reader.get_header();
         const auto& index = reader.get_index();
         
+        if (!model_overridden) {
+            // Reproduce the context model the encoder used; decoding with a
+            // different model silently produces garbage.
+            model = (header.context_model == 1) ? coding::ContextModel::Extended
+                                                : coding::ContextModel::Simple;
+        }
+        
         if (!has_roi) {
             rw = header.grid_width;
             rh = header.grid_height;
@@ -77,21 +86,8 @@ int run_decode(int argc, char** argv) {
         roi_grid.data.resize(rw * rh, 0);
         roi_grid.nodata_mask.resize(rw * rh, false);
         
-        predictor::LeftPredictor p_left;
-        predictor::AbovePredictor p_above;
-        predictor::AveragePredictor p_avg;
-        predictor::GradientPredictor p_grad;
-        predictor::JpegLsPredictor p_jpegls;
-        predictor::PlanePredictor p_plane;
-        predictor::GapPredictor p_gap;
-        predictor::AdaptiveGradientPredictor p_adap_grad;
-        predictor::LeastSquaresPredictor p_least_squares;
-        predictor::SecondOrderPredictor p_second_order;
-        predictor::LocalSlopePredictor p_local_slope;
-        
-        std::vector<const predictor::Predictor*> predictors_list = {
-            &p_grad, &p_left, &p_above, &p_avg, &p_jpegls, &p_plane, &p_gap, &p_adap_grad, &p_least_squares, &p_second_order, &p_local_slope
-        };
+        predictor::PredictorBank bank;
+        std::vector<const predictor::Predictor*> predictors_list = bank.ordered();
         
         std::uint32_t superblock_size = 512;
         std::uint32_t start_sx = (rx / superblock_size) * superblock_size;
@@ -106,12 +102,18 @@ int run_decode(int argc, char** argv) {
         std::atomic<uint32_t> next_superblock_idx(0);
         std::atomic<uint32_t> blocks_decoded(0);
         
+        std::atomic<bool> decode_failed{false};
+        std::string decode_error_msg;
+        std::mutex decode_error_mutex;
+        
         auto worker = [&]() {
-            uint32_t local_blocks_decoded = 0;
-            
-            while (true) {
-                uint32_t idx = next_superblock_idx.fetch_add(1);
-                if (idx >= num_superblocks_total) break;
+            try {
+                uint32_t local_blocks_decoded = 0;
+                
+                while (true) {
+                    if (decode_failed) break;
+                    uint32_t idx = next_superblock_idx.fetch_add(1);
+                    if (idx >= num_superblocks_total) break;
                 
                 std::uint32_t sy = start_sy + (idx / num_superblocks_x) * superblock_size;
                 std::uint32_t sx = start_sx + (idx % num_superblocks_x) * superblock_size;
@@ -143,6 +145,9 @@ int run_decode(int argc, char** argv) {
                     coding::BitReader br(bitstream);
                     
                     uint32_t predictor_idx = br.read_bits(8);
+                    if (predictor_idx >= predictors_list.size()) {
+                        throw std::runtime_error("Corrupt XTM: invalid predictor index " + std::to_string(predictor_idx));
+                    }
                     const predictor::Predictor* predictor = predictors_list[predictor_idx];
                     
                     bool use_wavelet = br.read_bits(1) != 0;
@@ -194,36 +199,8 @@ int run_decode(int argc, char** argv) {
                     }
                     if (!use_wavelet) max_levels = 0;
                     
-                    auto extract_subbands_local = [&](std::vector<std::pair<uint32_t, uint32_t>>& ll,
-                                                      std::vector<std::pair<uint32_t, uint32_t>>& lh,
-                                                      std::vector<std::pair<uint32_t, uint32_t>>& hl,
-                                                      std::vector<std::pair<uint32_t, uint32_t>>& hh) {
-                        for (uint32_t y = 0; y < entry.block_height; ++y) {
-                            for (uint32_t x = 0; x < entry.block_width; ++x) {
-                                uint32_t sb = 0;
-                                for (uint32_t level = 1; level <= max_levels; ++level) {
-                                    uint32_t cur_w = entry.block_width >> (level - 1);
-                                    uint32_t cur_h = entry.block_height >> (level - 1);
-                                    uint32_t half_w = cur_w / 2;
-                                    uint32_t half_h = cur_h / 2;
-                                    
-                                    if (x >= half_w || y >= half_h) {
-                                        if (x >= half_w && y >= half_h) sb = 3;
-                                        else if (x >= half_w) sb = 2;
-                                        else sb = 1;
-                                        break;
-                                    }
-                                }
-                                if (sb == 0) ll.push_back({x, y});
-                                else if (sb == 1) lh.push_back({x, y});
-                                else if (sb == 2) hl.push_back({x, y});
-                                else hh.push_back({x, y});
-                            }
-                        }
-                    };
-                    
                     std::vector<std::pair<uint32_t, uint32_t>> coords_LL, coords_LH, coords_HL, coords_HH;
-                    extract_subbands_local(coords_LL, coords_LH, coords_HL, coords_HH);
+                    coding::extract_subbands(entry.block_width, entry.block_height, max_levels, coords_LL, coords_LH, coords_HL, coords_HH);
                     
                     coding::ArithmeticDecoder ad(br);
                     std::unordered_map<coding::Context, coding::FrequencyTable> context_tables;
@@ -352,6 +329,13 @@ int run_decode(int argc, char** argv) {
             }
             
             blocks_decoded.fetch_add(local_blocks_decoded);
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(decode_error_mutex);
+                if (!decode_failed) {
+                    decode_error_msg = e.what();
+                    decode_failed = true;
+                }
+            }
         };
         
         uint32_t num_threads = std::thread::hardware_concurrency();
@@ -361,6 +345,11 @@ int run_decode(int argc, char** argv) {
         }
         for (auto& t : threads) {
             t.join();
+        }
+        
+        if (decode_failed) {
+            std::cerr << "Decode failed: " << decode_error_msg << "\n";
+            return 1;
         }
         
         auto end_time = std::chrono::high_resolution_clock::now();

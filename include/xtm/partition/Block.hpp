@@ -17,6 +17,11 @@ struct BlockView {
         return grid->get(x_offset + local_x, y_offset + local_y);
     }
     
+    // Raw pointer to the start of the block's row (local_y) for fast sequential access
+    const int32_t* row_data(std::uint32_t local_y) const {
+        return grid->data.data() + (y_offset + local_y) * grid->width + x_offset;
+    }
+    
     // Returns value from global grid, allowing predictors to look across boundaries (e.g., A, B, C neighbors)
     int32_t get_global(std::uint32_t global_x, std::uint32_t global_y) const {
         return grid->get(global_x, global_y);
@@ -39,6 +44,11 @@ struct MutableBlockView {
     
     int32_t get_global(std::uint32_t global_x, std::uint32_t global_y) const {
         return grid->get(global_x, global_y);
+    }
+    
+    // Raw pointer to the start of the block's row (local_y) for fast sequential access
+    int32_t* row_data(std::uint32_t local_y) {
+        return grid->data.data() + (y_offset + local_y) * grid->width + x_offset;
     }
     
     void set(std::uint32_t local_x, std::uint32_t local_y, int32_t val) {

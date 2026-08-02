@@ -1,9 +1,10 @@
 #include "xtm/transform/Wavelet.hpp"
 #include <utility>
+#include <algorithm>
 
 namespace xtm::transform {
 
-void CDF53Transform::forward_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length) {
+void CDF53Transform::forward_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length, std::vector<int32_t>& scratch) {
     if (length <= 1) return;
     
     // 1. Predict
@@ -30,8 +31,9 @@ void CDF53Transform::forward_1d(std::vector<int32_t>& data, uint32_t offset, uin
         data[offset + i_even * stride] += (d_n_minus_1 + d_n + 2) >> 2;
     }
     
-    // 3. Pack
-    std::vector<int32_t> temp(length);
+    // 3. Pack (in-place using scratch as a swap buffer)
+    std::vector<int32_t>& temp = scratch;
+    if (temp.size() < length) temp.resize(length);
     uint32_t half = (length + 1) / 2;
     for (uint32_t i = 0; i < length; ++i) {
         if (i % 2 == 0) {
@@ -45,11 +47,12 @@ void CDF53Transform::forward_1d(std::vector<int32_t>& data, uint32_t offset, uin
     }
 }
 
-void CDF53Transform::inverse_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length) {
+void CDF53Transform::inverse_1d(std::vector<int32_t>& data, uint32_t offset, uint32_t stride, uint32_t length, std::vector<int32_t>& scratch) {
     if (length <= 1) return;
     
     // 1. Unpack
-    std::vector<int32_t> temp(length);
+    std::vector<int32_t>& temp = scratch;
+    if (temp.size() < length) temp.resize(length);
     for (uint32_t i = 0; i < length; ++i) {
         temp[i] = data[offset + i * stride];
     }
@@ -88,6 +91,7 @@ void CDF53Transform::inverse_1d(std::vector<int32_t>& data, uint32_t offset, uin
 }
 
 void CDF53Transform::forward_2d(std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t levels) {
+    std::vector<int32_t> scratch(std::max(width, height));
     uint32_t cur_width = width;
     uint32_t cur_height = height;
     
@@ -96,12 +100,12 @@ void CDF53Transform::forward_2d(std::vector<int32_t>& data, uint32_t width, uint
         
         // Rows
         for (uint32_t y = 0; y < cur_height; ++y) {
-            forward_1d(data, y * width, 1, cur_width);
+            forward_1d(data, y * width, 1, cur_width, scratch);
         }
         
         // Cols
         for (uint32_t x = 0; x < cur_width; ++x) {
-            forward_1d(data, x, width, cur_height);
+            forward_1d(data, x, width, cur_height, scratch);
         }
         
         cur_width = (cur_width + 1) / 2;
@@ -119,6 +123,8 @@ void CDF53Transform::inverse_2d(std::vector<int32_t>& data, uint32_t width, uint
         cur_height = (cur_height + 1) / 2;
     }
     
+    std::vector<int32_t> scratch(std::max(width, height));
+    
     for (int l = levels - 1; l >= 0; --l) {
         cur_width = sizes[l].first;
         cur_height = sizes[l].second;
@@ -126,12 +132,12 @@ void CDF53Transform::inverse_2d(std::vector<int32_t>& data, uint32_t width, uint
         
         // Cols
         for (uint32_t x = 0; x < cur_width; ++x) {
-            inverse_1d(data, x, width, cur_height);
+            inverse_1d(data, x, width, cur_height, scratch);
         }
         
         // Rows
         for (uint32_t y = 0; y < cur_height; ++y) {
-            inverse_1d(data, y * width, 1, cur_width);
+            inverse_1d(data, y * width, 1, cur_width, scratch);
         }
     }
 }

@@ -3,6 +3,8 @@
 #include "AnalyzeCmd.hpp"
 #include "EncodeCmd.hpp"
 #include "DecodeCmd.hpp"
+#include "InfoCmd.hpp"
+#include "VerifyCmd.hpp"
 
 void print_usage() {
     std::cout << "Usage: xtm <command> [options]\n\n";
@@ -10,6 +12,8 @@ void print_usage() {
     std::cout << "  analyze <input.tif>    Run terrain analyzer and print statistics\n";
     std::cout << "  encode <input.tif> -o <output.xtm> [--scale <value>]\n";
     std::cout << "  decode <input.xtm> -o <output.tif> [--region x y w h]\n";
+    std::cout << "  info <input.xtm>       Print header and block index info\n";
+    std::cout << "  verify <input.xtm> [input.tif]  Verify checksums or diff against source\n";
 }
 
 int main(int argc, char** argv) {
@@ -30,6 +34,10 @@ int main(int argc, char** argv) {
         return xtm::cli::run_encode(argc - 1, argv + 1);
     } else if (command == "decode") {
         return xtm::cli::run_decode(argc - 1, argv + 1);
+    } else if (command == "info") {
+        return xtm::cli::run_info(argc - 1, argv + 1);
+    } else if (command == "verify") {
+        return xtm::cli::run_verify(argc - 1, argv + 1);
     } else {
         std::cerr << "Unknown command: " << command << "\n";
         print_usage();

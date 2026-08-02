@@ -9,11 +9,11 @@ static uint32_t get_magnitude_class(uint32_t val) {
     return 32 - __builtin_clz(val);
 }
 
-static void extract_subbands(uint32_t width, uint32_t height, uint32_t max_levels,
-                             std::vector<std::pair<uint32_t, uint32_t>>& ll,
-                             std::vector<std::pair<uint32_t, uint32_t>>& lh,
-                             std::vector<std::pair<uint32_t, uint32_t>>& hl,
-                             std::vector<std::pair<uint32_t, uint32_t>>& hh) {
+void extract_subbands(uint32_t width, uint32_t height, uint32_t max_levels,
+                      std::vector<std::pair<uint32_t, uint32_t>>& ll,
+                      std::vector<std::pair<uint32_t, uint32_t>>& lh,
+                      std::vector<std::pair<uint32_t, uint32_t>>& hl,
+                      std::vector<std::pair<uint32_t, uint32_t>>& hh) {
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
             Subband sb = Subband::LL;

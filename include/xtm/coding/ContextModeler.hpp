@@ -53,4 +53,12 @@ std::vector<Symbol> generate_symbols(const std::vector<int32_t>& data, uint32_t 
 // Reconstructs the wavelet block from the sequence of symbols
 void reconstruct_symbols(std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t max_levels, const std::vector<Symbol>& symbols);
 
+// Classifies each (x, y) coordinate into its wavelet subband given the decomposition levels.
+// Shared by the context modeler and the decoder so subband layouts stay in lockstep.
+void extract_subbands(uint32_t width, uint32_t height, uint32_t max_levels,
+                      std::vector<std::pair<uint32_t, uint32_t>>& ll,
+                      std::vector<std::pair<uint32_t, uint32_t>>& lh,
+                      std::vector<std::pair<uint32_t, uint32_t>>& hl,
+                      std::vector<std::pair<uint32_t, uint32_t>>& hh);
+
 } // namespace xtm::coding

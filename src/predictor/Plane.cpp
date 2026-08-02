@@ -3,8 +3,9 @@
 
 namespace xtm::predictor {
 
-PredictionResult PlanePredictor::encode(const partition::BlockView& block) const {
-    PredictionResult result;
+void PlanePredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
+    result.residuals.clear();
+    result.parameters.clear();
     result.residuals.reserve(block.width * block.height);
     
     double sum_x = 0, sum_y = 0, sum_z = 0;
@@ -14,10 +15,11 @@ PredictionResult PlanePredictor::encode(const partition::BlockView& block) const
     int n = block.width * block.height;
     
     for (std::uint32_t y = 0; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
         for (std::uint32_t x = 0; x < block.width; ++x) {
             double dx = static_cast<double>(x);
             double dy = static_cast<double>(y);
-            double dz = static_cast<double>(block.get(x, y));
+            double dz = static_cast<double>(row[x]);
             
             sum_x += dx;
             sum_y += dy;
@@ -58,14 +60,15 @@ PredictionResult PlanePredictor::encode(const partition::BlockView& block) const
     result.parameters = {a_fixed, b_fixed, c_fixed};
     
     for (std::uint32_t y = 0; y < block.height; ++y) {
+        const int32_t* row = block.row_data(y);
         for (std::uint32_t x = 0; x < block.width; ++x) {
-            int32_t X = block.get(x, y);
+            int32_t X = row[x];
             int32_t P = (a_fixed * static_cast<int32_t>(x) + b_fixed * static_cast<int32_t>(y) + c_fixed) / 1024;
             result.residuals.push_back(X - P);
         }
     }
     
-    return result;
+    return;
 }
 
 void PlanePredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
@@ -74,10 +77,11 @@ void PlanePredictor::decode(const PredictionResult& encoded, partition::MutableB
     int32_t c_fixed = encoded.parameters[2];
     
     for (std::uint32_t y = 0; y < block.height; ++y) {
+        int32_t* row = block.row_data(y);
         for (std::uint32_t x = 0; x < block.width; ++x) {
             int32_t R = encoded.residuals[y * block.width + x];
             int32_t P = (a_fixed * static_cast<int32_t>(x) + b_fixed * static_cast<int32_t>(y) + c_fixed) / 1024;
-            block.set(x, y, R + P);
+            row[x] = R + P;
         }
     }
 }
