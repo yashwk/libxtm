@@ -1,0 +1,142 @@
+cmake_minimum_required(VERSION 3.20)
+project(libxtm VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Default to Release build if not specified
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "Setting build type to 'Release' as none was specified.")
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+endif()
+
+# ccache integration (zero-config: silently skipped if not installed)
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    message(STATUS "Found ccache: ${CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+endif()
+
+# Enable Interprocedural Optimization (LTO)
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT output)
+if(ipo_supported)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
+
+# Sanitizers
+option(ENABLE_ASAN "Enable Address Sanitizer" OFF)
+option(ENABLE_TSAN "Enable Thread Sanitizer" OFF)
+
+if(ENABLE_ASAN)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+endif()
+
+# Enable common warnings and build-type-specific optimizations
+if(MSVC)
+    add_compile_options(/W4 /WX)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_compile_options(/O2 /Ob2 /Oi /Ot /Oy)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(/O2)
+    endif()
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_compile_options(-O3 -march=native -mtune=native -ffast-math)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(-O2 -march=native -fno-omit-frame-pointer)
+    endif()
+endif()
+
+# Consolidate output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# Symlink compile_commands.json to project root for IDE/clangd compatibility
+if(CMAKE_EXPORT_COMPILE_COMMANDS)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            ${CMAKE_SOURCE_DIR}/compile_commands.json
+    )
+endif()
+
+# Dependencies
+find_package(GDAL REQUIRED)
+find_package(Threads REQUIRED)
+
+# Library type option (controlled by BUILD_SHARED_LIBS)
+option(BUILD_SHARED_LIBS "Build shared library instead of static" OFF)
+
+# Collect sources automatically
+file(GLOB_RECURSE XTM_CORE_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+)
+
+add_library(xtm_core ${XTM_CORE_SOURCES})
+
+target_include_directories(xtm_core
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(xtm_core PUBLIC GDAL::GDAL)
+
+# Embed version info into compiled code
+target_compile_definitions(xtm_core PUBLIC
+    XTM_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    XTM_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    XTM_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+    XTM_VERSION="${PROJECT_VERSION}"
+)
+
+# Apps
+add_executable(xtm
+    apps/xtm/main.cpp
+    apps/xtm/AnalyzeCmd.cpp
+    apps/xtm/EncodeCmd.cpp
+    apps/xtm/DecodeCmd.cpp
+)
+target_link_libraries(xtm PRIVATE xtm_core Threads::Threads)
+
+# Tests
+option(BUILD_TESTS "Build unit tests" ON)
+
+if(BUILD_TESTS)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.16.0
+    )
+    FetchContent_MakeAvailable(googletest)
+
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# Install Rules
+include(GNUInstallDirs)
+
+install(TARGETS xtm_core xtm
+    EXPORT libxtmTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY include/xtm/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/xtm
+)

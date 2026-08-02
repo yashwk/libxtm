@@ -1,0 +1,29 @@
+# Build outputs
+build/
+cmake-build-*/
+.cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Artifacts
+*.xtm
+benchmark_results.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated
+compile_commands.json
+
+data
