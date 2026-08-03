@@ -66,9 +66,38 @@ The "Global" predictor entropies in `Analyzer.cpp` are computed per 512×512 sup
 ## 3. New Findings — Architecture & Maintainability
 
 ### 3.1 MEDIUM — The pipeline is triplicated
-The same stage sequence (quantize → quadtree → selector → wavelet → symbols → coder → container) is hand-written in `EncodeCmd.cpp`, `DecodeCmd.cpp`, and re-implemented again with instrumentation inside `Analyzer.cpp` (plus a fourth mirror in `tests/unit/test_codec_roundtrip.cpp`). Every new stage or tuning knob must be edited in all three, inviting the §2.4-class drift.
+The same stage sequence (quantize → quadtree → selector → wavelet → symbols → coder → container) is hand-written in four places that must stay in lockstep:
 
-**Fix:** extract library-level `XtmEncoder::encode(grid)`, `XtmDecoder::decode(roi)` and `xtm::encode_analyze(grid)::analyze` that take an `Options {scale, context_model, pipeline_order, disable_quadtree}`. CLI commands become thin argument→options wrappers (the spec's intent — "compression logic does not belong in main.cpp").
+```mermaid
+flowchart TB
+    subgraph dup["The four mirrors of the pipeline"]
+        direction TB
+        E["EncodeCmd.cpp — encoder orchestration"]
+        D["DecodeCmd.cpp — decoder orchestration"]
+        A["Analyzer.cpp — instrumented re-implementation"]
+        T["tests/unit/test_codec_roundtrip.cpp — in-test mirror"]
+    end
+    C["quantize → quadtree → selector → wavelet → symbols → coder → container"]
+    E -. replicates .-> C
+    D -. replicates .-> C
+    A -. re-implements .-> C
+    T -. mirrors .-> C
+```
+
+Every new stage or tuning knob must be edited in all four, inviting the §2.4-class drift.
+
+**Fix:** extract library-level `XtmEncoder::encode(grid)` and `XtmDecoder::decode(roi)` (plus a shared `xtm::analyze(grid)` on top), parameterized by
+
+```cpp
+struct Options {
+    float  scale;
+    int    context_model;      // 0 = Simple, 1 = Extended
+    int    pipeline_order;     // 0 = PredictorWavelet, 1 = WaveletPredictor
+    bool   disable_quadtree;
+};
+```
+
+CLI commands become thin argument→options wrappers (the spec's intent — "compression logic does not belong in main.cpp").
 
 ### 3.2 MEDIUM — Analyzer is a 736-line monolith
 `analyze_terrain()` contains one giant worker lambda with ~25 thread-local accumulators merged under a single mutex. This is already the source of subtle aggregation bugs (fixed in V10.5). Extract a `SuperblockStats` aggregate type with `.merge(SuperblockStats&)` and a `analyze_leaf()` helper, so the merge block disappears.
@@ -130,6 +159,18 @@ Unchanged from prior (§2.1, §2.6): each quadtree node allocates 2 vectors per 
 ---
 
 ## 7. Recommended Priority Order
+
+```mermaid
+flowchart LR
+    P1["1 · §2.1 CRS persistence"] --> P2["2 · §2.3 Plane guard + §2.5 EOF flag"]
+    P2 --> P3["3 · §3.1 Encoder/Decoder refactor"]
+    P3 --> P4["4 · §3.4 stable PredictorId"]
+    P4 --> P5["5 · §2.6 deterministic encode order"]
+    P5 --> P6["6 · §2.8 streaming histograms"]
+    P6 --> P7["7 · feature work (multires / rANS / python)"]
+
+    P3 -. "unlocks §3.2, §3.6, kills §2.4" .-> P3
+```
 
 1. **§2.1 CRS persistence** — one line in both reader/encoder + one test; fixes first genuine data loss.
 2. **§2.3 Plane params guard + §2.5 BitReader EOF flag** — the two remaining corrupt-file UB paths.
