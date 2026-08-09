@@ -1,66 +1,25 @@
 #include "xtm/coding/ContextModeler.hpp"
 #include "xtm/coding/ZigZag.hpp"
+#include "xtm/coding/RangeCoder.hpp"
 #include <cmath>
 
 namespace xtm::coding {
 
-static uint32_t get_magnitude_class(uint32_t val) {
-    if (val == 0) return 0;
-    return 32 - __builtin_clz(val);
-}
-
-void extract_subbands(uint32_t width, uint32_t height, uint32_t max_levels,
-                      std::vector<std::pair<uint32_t, uint32_t>>& ll,
-                      std::vector<std::pair<uint32_t, uint32_t>>& lh,
-                      std::vector<std::pair<uint32_t, uint32_t>>& hl,
-                      std::vector<std::pair<uint32_t, uint32_t>>& hh) {
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            Subband sb = Subband::LL;
-            for (uint32_t level = 1; level <= max_levels; ++level) {
-                uint32_t cur_w = width >> (level - 1);
-                uint32_t cur_h = height >> (level - 1);
-                uint32_t half_w = cur_w / 2;
-                uint32_t half_h = cur_h / 2;
-                
-                if (x >= half_w || y >= half_h) {
-                    if (x >= half_w && y >= half_h) sb = Subband::HH;
-                    else if (x >= half_w) sb = Subband::HL;
-                    else sb = Subband::LH;
-                    break;
-                }
-            }
-            if (sb == Subband::LL) ll.push_back({x, y});
-            else if (sb == Subband::LH) lh.push_back({x, y});
-            else if (sb == Subband::HL) hl.push_back({x, y});
-            else hh.push_back({x, y});
-        }
-    }
-}
-
-std::vector<Symbol> generate_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t max_levels, ContextModel model) {
-    std::vector<std::pair<uint32_t, uint32_t>> coords_LL, coords_LH, coords_HL, coords_HH;
-    extract_subbands(width, height, max_levels, coords_LL, coords_LH, coords_HL, coords_HH);
+void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, ArithmeticEncoder& ac, EncodingContext& ctx_data) {
     
-    std::vector<Symbol> symbols;
-    
-    auto process_subband = [&](const std::vector<std::pair<uint32_t, uint32_t>>& coords, Subband sb) {
+    auto process_stream = [&](uint32_t start_idx, uint32_t length, ContextStream stream) {
         uint32_t zero_run = 0;
         Context run_context;
         
-        for (size_t i = 0; i < coords.size(); ++i) {
-            uint32_t x = coords[i].first;
-            uint32_t y = coords[i].second;
-            int32_t val = data[y * width + x];
+        for (uint32_t i = 0; i < length; ++i) {
+            int32_t val = data[start_idx + i];
             
             Context ctx;
-            ctx.subband = static_cast<uint8_t>(sb);
-            
+            ctx.stream = static_cast<uint8_t>(stream);
             ctx.neighbour_activity = 0;
+            
             if (model == ContextModel::Extended && i > 0) {
-                uint32_t prev_x = coords[i-1].first;
-                uint32_t prev_y = coords[i-1].second;
-                if (std::abs(data[prev_y * width + prev_x]) > 2) {
+                if (std::abs(data[start_idx + i - 1]) > 2) {
                     ctx.neighbour_activity = 1;
                 }
             }
@@ -69,21 +28,25 @@ std::vector<Symbol> generate_symbols(const std::vector<int32_t>& data, uint32_t 
                 if (zero_run == 0) run_context = ctx;
                 zero_run++;
                 
-                if (zero_run == 255 || i == coords.size() - 1) {
-                    Symbol sym;
-                    sym.magnitude_class = 0;
-                    sym.run_length = zero_run;
-                    sym.context = run_context;
-                    symbols.push_back(sym);
+                if (zero_run == 255 || i == length - 1) {
+                    auto& table = ctx_data.tables[get_context_index(run_context)];
+                    ac.encode(table, 0);
+                    table.increment(0);
+                    
+                    ac.encode(ctx_data.run_table, zero_run - 1);
+                    ctx_data.run_table.increment(zero_run - 1);
+                    
                     zero_run = 0;
                 }
             } else {
                 if (zero_run > 0) {
-                    Symbol sym;
-                    sym.magnitude_class = 0;
-                    sym.run_length = zero_run;
-                    sym.context = run_context;
-                    symbols.push_back(sym);
+                    auto& table = ctx_data.tables[get_context_index(run_context)];
+                    ac.encode(table, 0);
+                    table.increment(0);
+                    
+                    ac.encode(ctx_data.run_table, zero_run - 1);
+                    ctx_data.run_table.increment(zero_run - 1);
+                    
                     zero_run = 0;
                 }
                 
@@ -91,55 +54,131 @@ std::vector<Symbol> generate_symbols(const std::vector<int32_t>& data, uint32_t 
                 uint32_t mag = get_magnitude_class(zz);
                 uint32_t remainder = zz & ((1u << (mag - 1)) - 1);
                 
-                Symbol sym;
-                sym.magnitude_class = mag;
-                sym.remainder = remainder;
-                sym.context = ctx;
-                symbols.push_back(sym);
+                auto& table = ctx_data.tables[get_context_index(ctx)];
+                ac.encode(table, mag);
+                table.increment(mag);
+                
+                if (mag > 1) {
+                    for (int j = mag - 2; j >= 0; --j) {
+                        uint32_t bit = (remainder >> j) & 1;
+                        ac.encode(ctx_data.uniform_bit, bit);
+                    }
+                }
             }
         }
     };
     
-    process_subband(coords_LL, Subband::LL);
-    process_subband(coords_LH, Subband::LH);
-    process_subband(coords_HL, Subband::HL);
-    process_subband(coords_HH, Subband::HH);
+    uint32_t length = width * height;
+    process_stream(0, length, ContextStream::Meter);
     
-    return symbols;
+    if (has_precision) {
+        process_stream(length, length, ContextStream::Precision);
+    }
 }
 
-void reconstruct_symbols(std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t max_levels, const std::vector<Symbol>& symbols) {
-    std::vector<std::pair<uint32_t, uint32_t>> coords_LL, coords_LH, coords_HL, coords_HH;
-    extract_subbands(width, height, max_levels, coords_LL, coords_LH, coords_HL, coords_HH);
+void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, ArithmeticDecoder& ad, EncodingContext& ctx_data) {
     
-    data.assign(width * height, 0);
-    
-    size_t sym_idx = 0;
-    
-    auto decode_subband = [&](const std::vector<std::pair<uint32_t, uint32_t>>& coords) {
-        size_t coord_idx = 0;
-        while (coord_idx < coords.size() && sym_idx < symbols.size()) {
-            const Symbol& sym = symbols[sym_idx++];
+    auto process_stream = [&](uint32_t start_idx, uint32_t length, ContextStream stream) {
+        uint32_t decoded = 0;
+        while (decoded < length) {
+            Context ctx;
+            ctx.stream = static_cast<uint8_t>(stream);
+            ctx.neighbour_activity = 0;
             
-            if (sym.magnitude_class == 0) {
-                // Zero run
-                coord_idx += sym.run_length;
-            } else {
-                uint32_t zz = (1u << (sym.magnitude_class - 1)) | sym.remainder;
-                int32_t val = zigzag_decode(zz);
+            if (model == ContextModel::Extended && decoded > 0) {
+                if (std::abs(data[start_idx + decoded - 1]) > 2) {
+                    ctx.neighbour_activity = 1;
+                }
+            }
+            
+            auto& table = ctx_data.tables[get_context_index(ctx)];
+            uint32_t mag = ad.decode(table);
+            table.increment(mag);
+            
+            if (mag == 0) {
+                uint32_t run = ad.decode(ctx_data.run_table) + 1;
+                ctx_data.run_table.increment(run - 1);
                 
-                uint32_t x = coords[coord_idx].first;
-                uint32_t y = coords[coord_idx].second;
-                data[y * width + x] = val;
-                coord_idx++;
+                for (uint32_t i = 0; i < run; ++i) {
+                    data[start_idx + decoded++] = 0;
+                }
+            } else {
+                uint32_t remainder = 0;
+                if (mag > 1) {
+                    for (int j = mag - 2; j >= 0; --j) {
+                        remainder |= (ad.decode(ctx_data.uniform_bit) << j);
+                    }
+                }
+                uint32_t zz = (1u << (mag - 1)) | remainder;
+                data[start_idx + decoded++] = zigzag_decode(zz);
             }
         }
     };
     
-    decode_subband(coords_LL);
-    decode_subband(coords_LH);
-    decode_subband(coords_HL);
-    decode_subband(coords_HH);
+    uint32_t length = width * height;
+    process_stream(0, length, ContextStream::Meter);
+    
+    if (has_precision) {
+        process_stream(length, length, ContextStream::Precision);
+    }
+}
+
+void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, std::vector<int32_t>& mag_classes, std::vector<int32_t>& run_lengths, std::unordered_map<Context, uint32_t>& context_sizes, uint32_t& remainder_bits) {
+    
+    auto process_stream = [&](uint32_t start_idx, uint32_t length, ContextStream stream) {
+        uint32_t zero_run = 0;
+        Context run_context;
+        
+        for (uint32_t i = 0; i < length; ++i) {
+            int32_t val = data[start_idx + i];
+            
+            Context ctx;
+            ctx.stream = static_cast<uint8_t>(stream);
+            ctx.neighbour_activity = 0;
+            
+            if (model == ContextModel::Extended && i > 0) {
+                if (std::abs(data[start_idx + i - 1]) > 2) {
+                    ctx.neighbour_activity = 1;
+                }
+            }
+            
+            if (val == 0) {
+                if (zero_run == 0) run_context = ctx;
+                zero_run++;
+                
+                if (zero_run == 255 || i == length - 1) {
+                    mag_classes.push_back(0);
+                    run_lengths.push_back(zero_run);
+                    context_sizes[run_context]++;
+                    zero_run = 0;
+                }
+            } else {
+                if (zero_run > 0) {
+                    mag_classes.push_back(0);
+                    run_lengths.push_back(zero_run);
+                    context_sizes[run_context]++;
+                    zero_run = 0;
+                }
+                
+                uint32_t zz = zigzag_encode(val);
+                uint32_t mag = get_magnitude_class(zz);
+                
+                mag_classes.push_back(mag);
+                context_sizes[ctx]++;
+                
+                if (mag > 1) {
+                    remainder_bits += (mag - 1);
+                }
+            }
+        }
+    };
+    
+    uint32_t length = width * height;
+    process_stream(0, length, ContextStream::Meter);
+    
+    if (has_precision) {
+        process_stream(length, length, ContextStream::Precision);
+    }
 }
 
 } // namespace xtm::coding

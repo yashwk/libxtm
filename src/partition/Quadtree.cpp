@@ -23,6 +23,9 @@ void partition_recursive(
     parent_block.height = height;
 
     auto parent_sel = selector.select(parent_block);
+    // The 1-bit split flag cost is bookkept on both branches of the split
+    // comparison, so it cancels out of the decision (intentional bookkeeping:
+    // the leaf-side flag is never actually serialized per block).
     double cost_split_flag = 1.0; // 1 bit overhead for split flag
     
     // If we reached min size or can't split, stop here
@@ -70,25 +73,24 @@ void partition_recursive(
 
 } // namespace
 
-std::vector<QuadtreeNode> QuadtreePartitioner::partition(
+void QuadtreePartitioner::partition(
     const terrain::IntGrid& grid,
     std::uint32_t max_block_size,
     std::uint32_t min_block_size,
     const analyzer::PredictorSelector& selector,
-    double& out_total_bits
+    double& out_total_bits,
+    std::vector<QuadtreeNode>& out_leaves
 ) {
-    std::vector<QuadtreeNode> leaf_nodes;
+    out_leaves.clear();
     out_total_bits = 0.0;
     
     for (std::uint32_t y = 0; y < grid.height; y += max_block_size) {
         for (std::uint32_t x = 0; x < grid.width; x += max_block_size) {
             std::uint32_t w = std::min(max_block_size, grid.width - x);
             std::uint32_t h = std::min(max_block_size, grid.height - y);
-            partition_recursive(grid, x, y, w, h, min_block_size, selector, leaf_nodes, out_total_bits);
+            partition_recursive(grid, x, y, w, h, min_block_size, selector, out_leaves, out_total_bits);
         }
     }
-    
-    return leaf_nodes;
 }
 
 } // namespace xtm::partition

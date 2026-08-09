@@ -22,7 +22,7 @@ The project is structured into multiple functional modules:
 - `src/container/`: Manages the binary representation and headers of the `.xtm` format.
 - `src/io/`: GDAL-based readers and writers for handling external geospatial formats.
 - `src/partition/`: Logic for spatial partitioning, including Quadtree implementations.
-- `src/predictor/`: A suite of predictive algorithms (e.g., `Above`, `Average`, `Gradient`, `JpegLs`, `LeastSquares`, `Left`, `LocalSlope`, `Plane`, `SecondOrder`).
+- `src/predictor/`: A suite of predictive algorithms (e.g., `Above`, `Average`, `Gradient`, `JpegLs`, `LeastSquares`, `Left`, `LocalSlope`, `Plane`).
 - `src/terrain/`: Core terrain operations including data quantization.
 - `src/transform/`: Domain transforms such as Wavelet encoding.
 
@@ -77,3 +77,12 @@ Decompress an `xtm` file back into a raster format. You can optionally decode a 
 ```bash
 xtm decode <input.xtm> -o <output.tif> [--region x y w h]
 ```
+
+### Precision model
+
+XTM is an **error-bounded** codec, not a bit-exact Float32 codec. Elevations are
+quantized to fixed-point integers before coding, so every sample round-trips
+within `|z - z_hat| <= scale / 2` units (the CLI default scale is 1.0, i.e.
+meter precision; pass `--scale 0.01` for centimeter precision at the cost of
+larger files). The quantization is lossless with respect to the quantized
+integer grid: decode reproduces the exact grid the encoder produced.

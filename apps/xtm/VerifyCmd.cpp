@@ -1,8 +1,9 @@
 #include "VerifyCmd.hpp"
-#include "DecodeCmd.hpp"
 #include "xtm/io/GDALReader.hpp"
 #include "xtm/Terrain.hpp"
 #include "xtm/container/IO.hpp"
+#include "xtm/coding/Decoder.hpp"
+#include "xtm/terrain/Quantization.hpp"
 #include <iostream>
 #include <string>
 #include <cmath>
@@ -33,8 +34,7 @@ int run_verify(int argc, char** argv) {
     }
     
     container::XtmReader& reader = *reader_ptr;
-    double scale = reader.get_header().res_x;
-    
+
     if (argc == 2) {
         std::cout << "Verifying block checksums for " << xtm_file << "...\n";
         const auto& index = reader.get_index();
@@ -52,55 +52,50 @@ int run_verify(int argc, char** argv) {
 
     std::string tif_file = argv[2];
 
-    std::string temp_tif = "/tmp/xtm_verify_temp.tif";
-
-    const char* decode_args[] = {
-        "decode",
-        xtm_file.c_str(),
-        "-o",
-        temp_tif.c_str()
-    };
-
-    std::cout << "Decoding " << xtm_file << " to temporary file...\n";
-    int decode_res = run_decode(4, const_cast<char**>(decode_args));
-    if (decode_res != 0) {
-        std::cerr << "Verification failed: Decoder returned error code " << decode_res << "\n";
-        return 1;
-    }
-
     try {
+        std::cout << "Decoding " << xtm_file << " into memory...\n";
+        
+        const auto& header = reader.get_header();
+        int rw = header.grid_width;
+        int rh = header.grid_height;
+        
+        terrain::IntGrid roi_grid;
+        roi_grid.width = rw;
+        roi_grid.height = rh;
+        roi_grid.data.resize(rw * rh, 0);
+        roi_grid.nodata_mask.resize(rw * rh, false);
+        
+        std::cout << "Detected Pipeline: " << (header.pipeline_id == container::XtmHeader::PIPELINE_WAVELET ? "Wavelet" : "Predictor") << "\n";
+        
+        reader.get_index();
+        coding::XtmDecoder::decode(reader, roi_grid, 0, 0, rw, rh, 0);
+        
         std::cout << "Reading original " << tif_file << "...\n";
         auto orig = io::read_gdal(tif_file);
-        
-        std::cout << "Reading decoded " << temp_tif << "...\n";
-        auto dec = io::read_gdal(temp_tif);
 
-        if (orig.width() != dec.width() || orig.height() != dec.height()) {
+        if (orig.width() != roi_grid.width || orig.height() != roi_grid.height) {
             std::cerr << "Verification failed: Dimension mismatch (" 
                       << orig.width() << "x" << orig.height() << " vs "
-                      << dec.width() << "x" << dec.height() << ")\n";
-            std::filesystem::remove(temp_tif);
+                      << roi_grid.width << "x" << roi_grid.height << ")\n";
             return 1;
         }
+
+        std::cout << "Quantizing original for exact integer comparison...\n";
+        auto orig_grid = terrain::quantize(orig.view(), header.scale);
 
         size_t mismatches = 0;
         size_t total = orig.width() * orig.height();
         
         for (size_t i = 0; i < total; ++i) {
-            float o = orig.data()[i];
-            float d = dec.data()[i];
+            bool o_nodata = orig_grid.nodata_mask[i];
+            bool d_nodata = roi_grid.nodata_mask[i];
             
-            bool o_is_nodata = orig.nodata_value.has_value() && o == orig.nodata_value.value();
-            bool d_is_nodata = dec.nodata_value.has_value() && d == dec.nodata_value.value();
-            
-            if (o_is_nodata != d_is_nodata) {
+            if (o_nodata != d_nodata) {
                 mismatches++;
-            } else if (!o_is_nodata && std::abs(o - d) > (0.5f * scale) + 1e-4f) {
+            } else if (!o_nodata && orig_grid.data[i] != roi_grid.data[i]) {
                 mismatches++;
             }
         }
-
-        std::filesystem::remove(temp_tif);
 
         if (mismatches > 0) {
             std::cerr << "Verification failed: " << mismatches << " of " << total << " pixels differ.\n";
@@ -111,7 +106,6 @@ int run_verify(int argc, char** argv) {
         
     } catch (const std::exception& e) {
         std::cerr << "Verification failed: Error during comparison - " << e.what() << "\n";
-        std::filesystem::remove(temp_tif);
         return 1;
     }
 

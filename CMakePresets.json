@@ -7,99 +7,44 @@
   },
   "configurePresets": [
     {
-      "name": "default",
+      "name": "dev",
+      "displayName": "Development",
+      "description": "Debug build with ASan and UBSan for local development",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "binaryDir": "${sourceDir}/build/dev",
       "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "ENABLE_ASAN": "ON",
+        "ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimized release build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      }
-    },
-    {
-      "name": "Debug",
-      "inherits": "default",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "Release",
-      "inherits": "default",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
-      }
-    },
-    {
-      "name": "RelWithDebInfo",
-      "inherits": "default",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
-      }
-    },
-    {
-      "name": "ASan",
-      "inherits": "Debug",
-      "cacheVariables": {
-        "ENABLE_ASAN": "ON"
-      }
-    },
-    {
-      "name": "TSan",
-      "inherits": "Debug",
-      "cacheVariables": {
-        "ENABLE_TSAN": "ON"
       }
     }
   ],
   "buildPresets": [
-    {
-      "name": "Debug",
-      "configurePreset": "Debug"
-    },
-    {
-      "name": "Release",
-      "configurePreset": "Release"
-    },
-    {
-      "name": "RelWithDebInfo",
-      "configurePreset": "RelWithDebInfo"
-    },
-    {
-      "name": "ASan",
-      "configurePreset": "ASan"
-    },
-    {
-      "name": "TSan",
-      "configurePreset": "TSan"
-    }
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "release", "configurePreset": "release" }
   ],
   "testPresets": [
     {
-      "name": "Debug",
-      "configurePreset": "Debug",
+      "name": "dev",
+      "configurePreset": "dev",
       "output": {"outputOnFailure": true},
       "execution": {"noTestsAction": "error", "stopOnFailure": true}
     },
     {
-      "name": "Release",
-      "configurePreset": "Release",
-      "output": {"outputOnFailure": true},
-      "execution": {"noTestsAction": "error", "stopOnFailure": true}
-    },
-    {
-      "name": "RelWithDebInfo",
-      "configurePreset": "RelWithDebInfo",
-      "output": {"outputOnFailure": true},
-      "execution": {"noTestsAction": "error", "stopOnFailure": true}
-    },
-    {
-      "name": "ASan",
-      "configurePreset": "ASan",
-      "output": {"outputOnFailure": true},
-      "execution": {"noTestsAction": "error", "stopOnFailure": true}
-    },
-    {
-      "name": "TSan",
-      "configurePreset": "TSan",
+      "name": "release",
+      "configurePreset": "release",
       "output": {"outputOnFailure": true},
       "execution": {"noTestsAction": "error", "stopOnFailure": true}
     }

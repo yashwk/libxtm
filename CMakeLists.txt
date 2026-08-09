@@ -19,16 +19,18 @@ if(CCACHE_PROGRAM)
     set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
 endif()
 
-# Enable Interprocedural Optimization (LTO)
+# Enable Interprocedural Optimization (LTO) only for Release builds
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_supported OUTPUT output)
-if(ipo_supported)
+if(ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
 # Sanitizers
 option(ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ENABLE_TSAN "Enable Thread Sanitizer" OFF)
+option(ENABLE_MSAN "Enable Memory Sanitizer" OFF)
+option(ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 
 if(ENABLE_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
@@ -38,6 +40,16 @@ endif()
 if(ENABLE_TSAN)
     add_compile_options(-fsanitize=thread)
     add_link_options(-fsanitize=thread)
+endif()
+
+if(ENABLE_MSAN)
+    add_compile_options(-fsanitize=memory -fPIE -pie -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=memory -fPIE -pie)
+endif()
+
+if(ENABLE_UBSAN)
+    add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=undefined)
 endif()
 
 # Enable common warnings and build-type-specific optimizations
@@ -116,13 +128,17 @@ target_link_libraries(xtm PRIVATE xtm_core Threads::Threads)
 option(BUILD_TESTS "Build unit tests" ON)
 
 if(BUILD_TESTS)
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.16.0
-    )
-    FetchContent_MakeAvailable(googletest)
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        message(STATUS "GTest not found locally; fetching from GitHub...")
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.16.0
+        )
+        FetchContent_MakeAvailable(googletest)
+    endif()
 
     enable_testing()
     add_subdirectory(tests)

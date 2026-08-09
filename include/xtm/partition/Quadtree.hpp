@@ -13,12 +13,13 @@ struct QuadtreeNode {
 
 class QuadtreePartitioner {
 public:
-    static std::vector<QuadtreeNode> partition(
+    static void partition(
         const terrain::IntGrid& grid,
         std::uint32_t max_block_size,
         std::uint32_t min_block_size,
         const analyzer::PredictorSelector& selector,
-        double& out_total_bits
+        double& out_total_bits,
+        std::vector<QuadtreeNode>& out_leaves
     );
 };
 

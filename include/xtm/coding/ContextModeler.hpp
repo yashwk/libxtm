@@ -2,22 +2,23 @@
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
+#include <algorithm>
+#include <array>
+#include "xtm/coding/RangeCoder.hpp"
 
 namespace xtm::coding {
 
-enum class Subband : uint8_t {
-    LL = 0,
-    LH = 1,
-    HL = 2,
-    HH = 3
+enum class ContextStream : uint8_t {
+    Meter = 0,
+    Precision = 1
 };
 
 struct Context {
-    uint8_t subband; // 0=LL, 1=LH, 2=HL, 3=HH
+    uint8_t stream; // 0=Meter, 1=Precision
     uint8_t neighbour_activity; // 0=low variance, 1=high variance
     
     bool operator==(const Context& other) const {
-        return subband == other.subband && neighbour_activity == other.neighbour_activity;
+        return stream == other.stream && neighbour_activity == other.neighbour_activity;
     }
 };
 
@@ -27,7 +28,7 @@ namespace std {
     template<>
     struct hash<xtm::coding::Context> {
         size_t operator()(const xtm::coding::Context& ctx) const {
-            return (std::hash<uint8_t>()(ctx.subband) << 1) ^ 
+            return (std::hash<uint8_t>()(ctx.stream) << 1) ^ 
                    std::hash<uint8_t>()(ctx.neighbour_activity);
         }
     };
@@ -40,25 +41,36 @@ enum class ContextModel {
     Extended
 };
 
-struct Symbol {
-    uint32_t magnitude_class;
-    uint32_t remainder;
-    uint32_t run_length; // Only valid if magnitude_class == 0
-    Context context;
+// Maximum wavelet decomposition levels for a block of the given dimensions.
+inline uint32_t max_wavelet_levels(uint32_t width, uint32_t height) {
+    uint32_t levels = 3;
+    uint32_t dim = std::min(width, height);
+    while (levels > 0 && dim < (1u << levels)) {
+        levels--;
+    }
+    return levels;
+}
+
+inline uint8_t get_context_index(const Context& ctx) {
+    return (ctx.stream << 1) | ctx.neighbour_activity;
+}
+
+struct EncodingContext {
+    std::array<FrequencyTable, 4> tables = {
+        FrequencyTable(33), FrequencyTable(33), FrequencyTable(33), FrequencyTable(33)
+    };
+    FrequencyTable run_table{256};
+    FrequencyTable uniform_bit{2};
+    
+    void reset() {
+        for (auto& t : tables) t.reset();
+        run_table.reset();
+        uniform_bit.reset();
+    }
 };
 
-// Generates the sequence of symbols and contexts from a wavelet block
-std::vector<Symbol> generate_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t max_levels, ContextModel model = ContextModel::Extended);
-
-// Reconstructs the wavelet block from the sequence of symbols
-void reconstruct_symbols(std::vector<int32_t>& data, uint32_t width, uint32_t height, uint32_t max_levels, const std::vector<Symbol>& symbols);
-
-// Classifies each (x, y) coordinate into its wavelet subband given the decomposition levels.
-// Shared by the context modeler and the decoder so subband layouts stay in lockstep.
-void extract_subbands(uint32_t width, uint32_t height, uint32_t max_levels,
-                      std::vector<std::pair<uint32_t, uint32_t>>& ll,
-                      std::vector<std::pair<uint32_t, uint32_t>>& lh,
-                      std::vector<std::pair<uint32_t, uint32_t>>& hl,
-                      std::vector<std::pair<uint32_t, uint32_t>>& hh);
+void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, class ArithmeticEncoder& ac, EncodingContext& ctx);
+void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, class ArithmeticDecoder& ad, EncodingContext& ctx);
+void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, std::vector<int32_t>& mag_classes, std::vector<int32_t>& run_lengths, std::unordered_map<Context, uint32_t>& context_sizes, uint32_t& remainder_bits);
 
 } // namespace xtm::coding

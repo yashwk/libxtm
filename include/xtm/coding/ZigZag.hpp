@@ -14,4 +14,10 @@ inline int32_t zigzag_decode(uint32_t val) {
     return static_cast<int32_t>((val >> 1) ^ (0 - (val & 1)));
 }
 
+// Computes the magnitude class (0 to 32) of an unsigned integer
+inline uint32_t get_magnitude_class(uint32_t val) {
+    if (val == 0) return 0;
+    return 32 - __builtin_clz(val);
+}
+
 } // namespace xtm::coding

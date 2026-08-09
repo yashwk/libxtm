@@ -1,9 +1,12 @@
 #include "xtm/io/GDALReader.hpp"
 #include <gdal_priv.h>
 #include <cpl_conv.h>
+#include <ogr_spatialref.h>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace xtm::io {
+
 
 TerrainBuffer read_gdal(const std::string& path) {
     GDALAllRegister();
@@ -37,11 +40,15 @@ TerrainBuffer read_gdal(const std::string& path) {
     int has_nodata = 0;
     double nodata = band->GetNoDataValue(&has_nodata);
     if (has_nodata) {
-        buffer.nodata_value = static_cast<float>(nodata);
+        buffer.nodata_value = nodata;
     }
 
+    const char* wkt = dataset->GetProjectionRef();
+    if (wkt && *wkt) {
+        buffer.wkt_projection = wkt;
+    }
     CPLErr err = band->RasterIO(GF_Read, 0, 0, width, height,
-                                buffer.data(), width, height, GDT_Float32,
+                                buffer.data(), width, height, GDT_Float64,
                                 0, 0);
 
     GDALClose(dataset);

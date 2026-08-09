@@ -15,7 +15,7 @@ IntGrid quantize(const TerrainView& view, double scale) {
 
     for (std::uint32_t y = 0; y < view.height; ++y) {
         for (std::uint32_t x = 0; x < view.width; ++x) {
-            float val = view.get(x, y);
+            double val = view.get(x, y);
             uint32_t idx = y * view.width + x;
             if (view.nodata_value && val == *view.nodata_value) {
                 grid.nodata_mask[idx] = true;
@@ -68,7 +68,7 @@ IntGrid quantize(const TerrainView& view, double scale) {
     return grid;
 }
 
-TerrainBuffer dequantize(const IntGrid& grid, double scale, std::optional<float> nodata_value, GeoTransform transform) {
+TerrainBuffer dequantize(const IntGrid& grid, double scale, std::optional<double> nodata_value, GeoTransform transform) {
     TerrainBuffer buffer(grid.width, grid.height);
     buffer.nodata_value = nodata_value;
     buffer.transform = transform;
@@ -77,7 +77,7 @@ TerrainBuffer dequantize(const IntGrid& grid, double scale, std::optional<float>
         if (!grid.nodata_mask.empty() && grid.nodata_mask[i] && nodata_value.has_value()) {
             buffer.data()[i] = *nodata_value;
         } else {
-            buffer.data()[i] = static_cast<float>(grid.data[i] * scale);
+            buffer.data()[i] = static_cast<double>(grid.data[i] * scale);
         }
     }
     return buffer;

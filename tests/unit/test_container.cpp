@@ -3,20 +3,48 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <vector>
+#include <random>
 
 using namespace xtm::container;
 
-TEST(ContainerTest, RoundtripWriterReader) {
-    std::string test_file = "test_output.xtm";
+namespace {
+
+class ContainerTest : public ::testing::Test {
+protected:
+    std::string temp_dir_;
+
+    void SetUp() override {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(10000, 99999);
+        temp_dir_ = std::filesystem::temp_directory_path() / ("xtm_test_container_" + std::to_string(dis(gen)));
+        std::filesystem::create_directory(temp_dir_);
+    }
+
+    void TearDown() override {
+        if (std::filesystem::exists(temp_dir_)) {
+            std::filesystem::remove_all(temp_dir_);
+        }
+    }
+
+    std::string get_temp_file(const std::string& name) {
+        return (std::filesystem::path(temp_dir_) / name).string();
+    }
+};
+
+} // namespace
+
+TEST_F(ContainerTest, RoundtripWriterReader) {
+    std::string test_file = get_temp_file("test_output.xtm");
     
     XtmHeader header;
-    header.min_x = 100.0;
-    header.min_y = 200.0;
-    header.max_x = 300.0;
-    header.max_y = 400.0;
-    header.epsg_crs = 4326;
+    header.transform.origin_x = 100.0;
+    header.transform.origin_y = 400.0;
+    header.wkt_projection = "PROJCS[\"WGS 84 / Pseudo-Mercator\"]";
     header.grid_width = 1024;
     header.grid_height = 1024;
+    header.scale = 0.5;
     header.context_model = 1;
     
     {
@@ -35,8 +63,9 @@ TEST(ContainerTest, RoundtripWriterReader) {
         XtmReader reader(test_file);
         
         const auto& h = reader.get_header();
-        EXPECT_EQ(h.epsg_crs, 4326u);
+        EXPECT_EQ(h.wkt_projection, "PROJCS[\"WGS 84 / Pseudo-Mercator\"]");
         EXPECT_EQ(h.grid_width, 1024u);
+        EXPECT_EQ(h.scale, 0.5);
         EXPECT_EQ(h.context_model, 1u);
         
         const auto& index = reader.get_index();
@@ -57,23 +86,20 @@ TEST(ContainerTest, RoundtripWriterReader) {
         EXPECT_EQ(b2.size(), 4u);
         EXPECT_EQ(b2[0], 0x11);
     }
-    
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsBadMagic) {
-    std::string test_file = "test_bad_magic.xtm";
+TEST_F(ContainerTest, RejectsBadMagic) {
+    std::string test_file = get_temp_file("test_bad_magic.xtm");
     {
         std::ofstream os(test_file, std::ios::binary | std::ios::trunc);
         os.write("NOPE", 4);
         os.write("\0\0\0\0", 4);
     }
     EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsUnsupportedVersion) {
-    std::string test_file = "test_bad_version.xtm";
+TEST_F(ContainerTest, RejectsUnsupportedVersion) {
+    std::string test_file = get_temp_file("test_bad_version.xtm");
     {
         XtmHeader header;
         header.version = 99;
@@ -81,21 +107,19 @@ TEST(ContainerTest, RejectsUnsupportedVersion) {
         header.write(os);
     }
     EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsTruncatedHeader) {
-    std::string test_file = "test_truncated.xtm";
+TEST_F(ContainerTest, RejectsTruncatedHeader) {
+    std::string test_file = get_temp_file("test_truncated.xtm");
     {
         std::ofstream os(test_file, std::ios::binary | std::ios::trunc);
         os.write("XTM\0", 4); // Header cut off after magic
     }
     EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsIndexOffsetBeyondFile) {
-    std::string test_file = "test_bad_index.xtm";
+TEST_F(ContainerTest, RejectsIndexOffsetBeyondFile) {
+    std::string test_file = get_temp_file("test_bad_index.xtm");
     {
         XtmHeader header;
         header.index_offset = 1ull << 40; // Far beyond any realistic file
@@ -103,11 +127,10 @@ TEST(ContainerTest, RejectsIndexOffsetBeyondFile) {
         header.write(os);
     }
     EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsBlockRegionBeyondFile) {
-    std::string test_file = "test_bad_block.xtm";
+TEST_F(ContainerTest, RejectsBlockRegionBeyondFile) {
+    std::string test_file = get_temp_file("test_bad_block.xtm");
     {
         XtmWriter writer(test_file, XtmHeader{});
         writer.write_block(0, 0, 64, 64, {0xDE, 0xAD, 0xBE, 0xEF});
@@ -124,11 +147,10 @@ TEST(ContainerTest, RejectsBlockRegionBeyondFile) {
         bad_entry.byte_length = 4;
         EXPECT_THROW(reader.read_block(bad_entry), std::runtime_error);
     }
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsInvalidContextModel) {
-    std::string test_file = "test_bad_context.xtm";
+TEST_F(ContainerTest, RejectsInvalidContextModel) {
+    std::string test_file = get_temp_file("test_bad_context.xtm");
     {
         XtmHeader header;
         header.context_model = 42;
@@ -136,11 +158,10 @@ TEST(ContainerTest, RejectsInvalidContextModel) {
         header.write(os);
     }
     EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
-    std::filesystem::remove(test_file);
 }
 
-TEST(ContainerTest, RejectsZeroLengthBlockRegionOutsideFile) {
-    std::string test_file = "test_bad_block2.xtm";
+TEST_F(ContainerTest, RejectsZeroLengthBlockRegionOutsideFile) {
+    std::string test_file = get_temp_file("test_bad_block2.xtm");
     {
         XtmWriter writer(test_file, XtmHeader{});
         writer.write_block(0, 0, 64, 64, {0xAA});
@@ -153,5 +174,34 @@ TEST(ContainerTest, RejectsZeroLengthBlockRegionOutsideFile) {
         bad_entry.byte_length = 0;
         EXPECT_THROW(reader.read_block(bad_entry), std::runtime_error);
     }
-    std::filesystem::remove(test_file);
+}
+
+TEST_F(ContainerTest, OutputIsDeterministicAcrossWriteOrder) {
+    const std::string file_a = get_temp_file("test_det_a.xtm");
+    const std::string file_b = get_temp_file("test_det_b.xtm");
+
+    std::vector<uint8_t> block1 = {0xAA, 0xBB, 0xCC};
+    std::vector<uint8_t> block2 = {0x11, 0x22, 0x33, 0x44};
+    std::vector<uint8_t> block3 = {0xDE, 0xAD, 0xBE, 0xEF};
+
+    {
+        XtmWriter writer(file_a, XtmHeader{});
+        writer.write_block(0, 0, 64, 64, block1, 1);
+        writer.write_block(0, 64, 64, 64, block2, 2);
+        writer.write_block(64, 0, 64, 64, block3, 3);
+        writer.finalize();
+    }
+    {
+        XtmWriter writer(file_b, XtmHeader{});
+        writer.write_block(64, 0, 64, 64, block3, 3);
+        writer.write_block(0, 64, 64, 64, block2, 2);
+        writer.write_block(0, 0, 64, 64, block1, 1);
+        writer.finalize();
+    }
+
+    std::ifstream ia(file_a, std::ios::binary);
+    std::ifstream ib(file_b, std::ios::binary);
+    std::vector<uint8_t> bytes_a((std::istreambuf_iterator<char>(ia)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> bytes_b((std::istreambuf_iterator<char>(ib)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(bytes_a, bytes_b);
 }

@@ -11,6 +11,16 @@ FrequencyTable::FrequencyTable(uint32_t num_symbols) {
     }
 }
 
+void FrequencyTable::reset() {
+    uint32_t num_symbols = freqs_.size();
+    std::fill(freqs_.begin(), freqs_.end(), 1);
+    std::fill(cum_freq_.begin(), cum_freq_.end(), 0);
+    total_ = num_symbols;
+    for (uint32_t i = 0; i < num_symbols; ++i) {
+        cum_freq_[i + 1] = cum_freq_[i] + freqs_[i];
+    }
+}
+
 void FrequencyTable::increment(uint32_t symbol) {
     // Halve frequencies if total gets too large (e.g. 16384) to prevent overflow in math
     if (total_ >= 16384) {

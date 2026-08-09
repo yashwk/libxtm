@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "xtm/predictor/Predictors.hpp"
 #include <random>
+#include <stdexcept>
 
 using namespace xtm;
 
@@ -58,17 +59,7 @@ TEST(PredictorTest, LeftPredictorRoundTrip) {
     test_roundtrip(p, 10, 1);
 }
 
-TEST(PredictorTest, AbovePredictorRoundTrip) {
-    predictor::AbovePredictor p;
-    test_roundtrip(p, 64, 64);
-    test_roundtrip(p, 1, 10);
-}
 
-TEST(PredictorTest, AveragePredictorRoundTrip) {
-    predictor::AveragePredictor p;
-    test_roundtrip(p, 64, 64);
-    test_roundtrip(p, 10, 10);
-}
 
 TEST(PredictorTest, GradientPredictorRoundTrip) {
     predictor::GradientPredictor p;
@@ -82,8 +73,8 @@ TEST(PredictorTest, JpegLsPredictorRoundTrip) {
     test_roundtrip(p, 15, 20);
 }
 
-TEST(PredictorTest, PlanePredictorRoundTrip) {
-    predictor::PlanePredictor p;
+TEST(PredictorTest, PolynomialPredictorRoundTrip) {
+    predictor::PolynomialPredictor p;
     test_roundtrip(p, 64, 64);
     test_roundtrip(p, 15, 20);
 }
@@ -94,11 +85,6 @@ TEST(PredictorTest, GapPredictorRoundTrip) {
     test_roundtrip(p, 15, 20);
 }
 
-TEST(PredictorTest, AdaptiveGradientPredictorRoundTrip) {
-    predictor::AdaptiveGradientPredictor p;
-    test_roundtrip(p, 64, 64);
-    test_roundtrip(p, 15, 20);
-}
 
 TEST(PredictorTest, LeastSquaresPredictorRoundTrip) {
     predictor::LeastSquaresPredictor p;
@@ -106,14 +92,98 @@ TEST(PredictorTest, LeastSquaresPredictorRoundTrip) {
     test_roundtrip(p, 15, 20);
 }
 
-TEST(PredictorTest, SecondOrderPredictorRoundTrip) {
-    predictor::SecondOrderPredictor p;
-    test_roundtrip(p, 64, 64);
-    test_roundtrip(p, 15, 20);
+
+
+TEST(PredictorTest, PolynomialPredictorRejectsMissingParameters) {
+    predictor::PolynomialPredictor p;
+    terrain::IntGrid grid;
+    grid.width = 16;
+    grid.height = 16;
+    grid.data.resize(16 * 16, 0);
+
+    partition::MutableBlockView mblock;
+    mblock.grid = &grid;
+    mblock.x_offset = 0;
+    mblock.y_offset = 0;
+    mblock.width = 16;
+    mblock.height = 16;
+
+    predictor::PredictionResult encoded;
+    encoded.residuals.assign(16 * 16, 0);
+    EXPECT_THROW(p.decode(encoded, mblock), std::runtime_error);
 }
 
-TEST(PredictorTest, LocalSlopePredictorRoundTrip) {
-    predictor::LocalSlopePredictor p;
-    test_roundtrip(p, 64, 64);
-    test_roundtrip(p, 15, 20);
+TEST(PredictorTest, LeastSquaresPredictorRejectsMissingParameters) {
+    predictor::LeastSquaresPredictor p;
+    terrain::IntGrid grid;
+    grid.width = 16;
+    grid.height = 16;
+    grid.data.resize(16 * 16, 0);
+
+    partition::MutableBlockView mblock;
+    mblock.grid = &grid;
+    mblock.x_offset = 0;
+    mblock.y_offset = 0;
+    mblock.width = 16;
+    mblock.height = 16;
+
+    predictor::PredictionResult encoded;
+    encoded.residuals.assign(16 * 16, 0);
+    EXPECT_THROW(p.decode(encoded, mblock), std::runtime_error);
+}
+
+TEST(PredictorTest, PolynomialPredictorFitsCubicSurface) {
+    predictor::PolynomialPredictor p;
+    terrain::IntGrid grid;
+    grid.width = 64;
+    grid.height = 64;
+    grid.data.resize(64 * 64, 0);
+
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            double u = (x - 31.5) / 31.5;
+            double v = (y - 31.5) / 31.5;
+            double z = 5000.0 * (u*u*u - 3*u*v*v) + 2000.0 * (v*v*v - 3*v*u*u) + 1000.0 * u * v;
+            grid.data[y * 64 + x] = static_cast<int32_t>(z);
+        }
+    }
+
+    partition::MutableBlockView mblock;
+    mblock.grid = &grid;
+    mblock.x_offset = 0;
+    mblock.y_offset = 0;
+    mblock.width = 64;
+    mblock.height = 64;
+
+    partition::BlockView block;
+    block.grid = mblock.grid;
+    block.x_offset = mblock.x_offset;
+    block.y_offset = mblock.y_offset;
+    block.width = mblock.width;
+    block.height = mblock.height;
+    
+    predictor::PredictionResult encoded;
+    p.encode(block, encoded);
+
+    EXPECT_EQ(encoded.parameters.size(), 11);
+
+    int32_t max_res = 0;
+    for (int32_t r : encoded.residuals) {
+        max_res = std::max(max_res, std::abs(r));
+    }
+    EXPECT_LT(max_res, 100);
+
+    terrain::IntGrid decoded_grid = grid;
+    std::fill(decoded_grid.data.begin(), decoded_grid.data.end(), 0);
+    partition::MutableBlockView dec_block;
+    dec_block.grid = &decoded_grid;
+    dec_block.x_offset = 0;
+    dec_block.y_offset = 0;
+    dec_block.width = 64;
+    dec_block.height = 64;
+    
+    p.decode(encoded, dec_block);
+    for (size_t i = 0; i < grid.data.size(); ++i) {
+        EXPECT_EQ(decoded_grid.data[i], grid.data[i]);
+    }
 }

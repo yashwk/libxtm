@@ -14,8 +14,78 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include "xtm/coding/Pipeline.hpp"
 
 namespace xtm::analyzer {
+
+struct SuperblockStats {
+    std::unordered_map<int32_t, std::size_t> glob_left, glob_grad, glob_jpegls, glob_polynomial, glob_gap, glob_least_squares;
+    std::unordered_map<int32_t, std::size_t> block64_left, block64_grad, block64_jpegls, block64_polynomial, block64_gap, block64_least_squares;
+    
+    double total_adaptive_64_bits = 0;
+    double quad_bits = 0;
+    double dwt_bits = 0;
+    double quad_overhead = 0;
+    std::size_t quad_leaves = 0;
+    
+    QuadtreeStats q_stats;
+    PredictorUsage p_usage;
+    SubbandStats w_stats;
+    
+    std::size_t ll_zeros=0, lh_zeros=0, hl_zeros=0, hh_zeros=0;
+    std::unordered_map<int32_t, std::size_t> ll_map, lh_map, hl_map, hh_map;
+    std::size_t ll_count=0, lh_count=0, hl_count=0, hh_count=0;
+    std::size_t total_zero_runs=0, total_zero_run_length=0;
+    std::size_t total_symbols=0, total_contexts=0;
+    std::unordered_map<coding::Context, std::size_t> global_context_sizes;
+    
+    std::size_t easy_count=0, medium_count=0, hard_count=0;
+    double easy_entropy=0, medium_entropy=0, hard_entropy=0;
+    std::size_t exact=0, w1=0, w2=0, w5=0, w10=0, res_count=0;
+    std::unordered_map<int32_t, std::size_t> histogram;
+    
+    void merge(const SuperblockStats& o) {
+        auto merge_counts = [](std::unordered_map<int32_t, std::size_t>& dst, const std::unordered_map<int32_t, std::size_t>& src) {
+            for (const auto& kv : src) dst[kv.first] += kv.second;
+        };
+        merge_counts(glob_left, o.glob_left); merge_counts(glob_grad, o.glob_grad); merge_counts(glob_jpegls, o.glob_jpegls); merge_counts(glob_polynomial, o.glob_polynomial);
+        merge_counts(glob_gap, o.glob_gap); merge_counts(glob_least_squares, o.glob_least_squares);
+        merge_counts(block64_left, o.block64_left); merge_counts(block64_grad, o.block64_grad); merge_counts(block64_jpegls, o.block64_jpegls); merge_counts(block64_polynomial, o.block64_polynomial);
+        merge_counts(block64_gap, o.block64_gap); merge_counts(block64_least_squares, o.block64_least_squares);
+        total_adaptive_64_bits += o.total_adaptive_64_bits;
+        quad_bits += o.quad_bits; dwt_bits += o.dwt_bits; quad_overhead += o.quad_overhead;
+        quad_leaves += o.quad_leaves;
+        
+        q_stats.size_512_count += o.q_stats.size_512_count; q_stats.size_256_count += o.q_stats.size_256_count;
+        q_stats.size_128_count += o.q_stats.size_128_count; q_stats.size_64_count += o.q_stats.size_64_count;
+        
+        p_usage.left_count += o.p_usage.left_count; p_usage.left_mag_sum += o.p_usage.left_mag_sum; p_usage.left_final_bits += o.p_usage.left_final_bits; p_usage.left_final_pixels += o.p_usage.left_final_pixels;
+        p_usage.gradient_count += o.p_usage.gradient_count; p_usage.gradient_mag_sum += o.p_usage.gradient_mag_sum; p_usage.gradient_final_bits += o.p_usage.gradient_final_bits; p_usage.gradient_final_pixels += o.p_usage.gradient_final_pixels;
+        p_usage.jpegls_count += o.p_usage.jpegls_count; p_usage.jpegls_mag_sum += o.p_usage.jpegls_mag_sum; p_usage.jpegls_final_bits += o.p_usage.jpegls_final_bits; p_usage.jpegls_final_pixels += o.p_usage.jpegls_final_pixels;
+        p_usage.polynomial_count += o.p_usage.polynomial_count; p_usage.polynomial_mag_sum += o.p_usage.polynomial_mag_sum; p_usage.polynomial_final_bits += o.p_usage.polynomial_final_bits; p_usage.polynomial_final_pixels += o.p_usage.polynomial_final_pixels;
+        p_usage.gap_count += o.p_usage.gap_count; p_usage.gap_mag_sum += o.p_usage.gap_mag_sum; p_usage.gap_final_bits += o.p_usage.gap_final_bits; p_usage.gap_final_pixels += o.p_usage.gap_final_pixels;
+        p_usage.least_squares_count += o.p_usage.least_squares_count; p_usage.least_squares_mag_sum += o.p_usage.least_squares_mag_sum; p_usage.least_squares_final_bits += o.p_usage.least_squares_final_bits; p_usage.least_squares_final_pixels += o.p_usage.least_squares_final_pixels;
+        p_usage.second_order_pass_count += o.p_usage.second_order_pass_count;
+        p_usage.second_order_bits_savings += o.p_usage.second_order_bits_savings;
+        p_usage.base_bits_total += o.p_usage.base_bits_total;
+        ll_zeros += o.ll_zeros; lh_zeros += o.lh_zeros; hl_zeros += o.hl_zeros; hh_zeros += o.hh_zeros;
+        merge_counts(ll_map, o.ll_map); ll_count += o.ll_count;
+        merge_counts(lh_map, o.lh_map); lh_count += o.lh_count;
+        merge_counts(hl_map, o.hl_map); hl_count += o.hl_count;
+        merge_counts(hh_map, o.hh_map); hh_count += o.hh_count;
+        
+        total_zero_runs += o.total_zero_runs; total_zero_run_length += o.total_zero_run_length;
+        w_stats.max_zero_run = std::max(w_stats.max_zero_run, o.w_stats.max_zero_run);
+        
+        total_symbols += o.total_symbols; total_contexts += o.total_contexts;
+        for (const auto& kv : o.global_context_sizes) global_context_sizes[kv.first] += kv.second;
+        
+        easy_count += o.easy_count; medium_count += o.medium_count; hard_count += o.hard_count;
+        easy_entropy += o.easy_entropy; medium_entropy += o.medium_entropy; hard_entropy += o.hard_entropy;
+        exact += o.exact; w1 += o.w1; w2 += o.w2; w5 += o.w5; w10 += o.w10; res_count += o.res_count;
+        merge_counts(histogram, o.histogram);
+    }
+};
 
 static void compute_correlation(const int32_t* data, uint32_t width, uint32_t height, double& horiz, double& vert, double& diag) {
     if (width < 2 || height < 2) return;
@@ -56,7 +126,7 @@ static void compute_correlation(const int32_t* data, uint32_t width, uint32_t he
     diag = cov_d / var_d;
 }
 
-AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::ContextModel model) {
+AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::ContextModel model, const AnalyzerOptions& options) {
     AnalysisReport report{};
     report.width = view.width;
     report.height = view.height;
@@ -136,424 +206,272 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     if (!cm_vals.empty()) report.precision.centimeter_entropy = calculate_entropy(cm_vals);
     if (!mm_vals.empty()) report.precision.millimeter_entropy = calculate_entropy(mm_vals);
     
+    if (scale_factor > 1) {
+        for (size_t i = 0; i < grid.data.size(); ++i) {
+            if (!grid.nodata_mask.empty() && grid.nodata_mask[i]) continue;
+            // Similar to Encoder.cpp: m = val / scale_factor
+            grid.data[i] = grid.data[i] / scale_factor;
+        }
+    }
+    
     compute_correlation(grid.data.data(), grid.width, grid.height, 
                         report.correlation_stats.raw_horizontal, 
                         report.correlation_stats.raw_vertical, 
                         report.correlation_stats.raw_diagonal);
 
     // Multithreaded analysis over 512x512 superblocks
-    std::uint32_t superblock_size = 512;
-    std::uint32_t num_superblocks_x = (grid.width + superblock_size - 1) / superblock_size;
-    std::uint32_t num_superblocks_y = (grid.height + superblock_size - 1) / superblock_size;
-    std::uint32_t num_superblocks_total = num_superblocks_x * num_superblocks_y;
-
-    std::atomic<uint32_t> next_superblock_idx(0);
+    SuperblockStats global_stats;
     std::mutex stats_mutex;
+    predictor::PredictorBank global_bank;
+    PredictorSelector global_selector(global_bank.ordered(), options.enable_wavelet_analysis ? PipelineType::Wavelet : PipelineType::Predictor, 1.0, model);
+    coding::Options pipeline_opts;
+    pipeline_opts.pipeline_type = options.enable_wavelet_analysis ? PipelineType::Wavelet : PipelineType::Predictor;
+    pipeline_opts.context_model = model;
     
-    // Global stats aggregators
-    std::unordered_map<int32_t, std::size_t> glob_left_counts, glob_above_counts, glob_avg_counts, glob_grad_counts, glob_jpegls_counts, glob_plane_counts, glob_gap_counts, glob_adap_grad_counts, glob_least_squares_counts, glob_second_order_counts, glob_local_slope_counts;
-    std::unordered_map<int32_t, std::size_t> block64_left_counts, block64_above_counts, block64_avg_counts, block64_grad_counts, block64_jpegls_counts, block64_plane_counts, block64_gap_counts, block64_adap_grad_counts, block64_least_squares_counts, block64_second_order_counts, block64_local_slope_counts;
-    
-    double total_adaptive_64_bits = 0;
-    double quad_bits_total = 0;
-    double dwt_bits_total = 0;
-    double quad_overhead_total = 0;
-    std::size_t total_quad_leaves = 0;
-    
-    QuadtreeStats q_stats;
-    PredictorUsage p_usage;
-    SubbandStats w_stats;
-    ContextStats c_stats;
-    ResidualDistributionStats r_dist_stats;
-    
-    std::size_t ll_zeros=0, lh_zeros=0, hl_zeros=0, hh_zeros=0;
-    std::unordered_map<int32_t, std::size_t> ll_map, lh_map, hl_map, hh_map;
-    std::size_t ll_count=0, lh_count=0, hl_count=0, hh_count=0;
-    std::size_t total_zero_runs=0, total_zero_run_length=0;
-    std::size_t total_symbols=0, total_contexts=0;
-    std::unordered_map<coding::Context, std::size_t> global_context_sizes;
-    
-    
-    std::size_t easy_count=0, medium_count=0, hard_count=0;
-    double easy_entropy=0, medium_entropy=0, hard_entropy=0;
-    std::size_t exact=0, w1=0, w2=0, w5=0, w10=0, res_count=0;
-    std::unordered_map<int32_t, std::size_t> histogram;
-
-    auto worker = [&]() {
-        predictor::PredictorBank bank;
+    coding::run_pipeline(grid, pipeline_opts, global_selector, [&](const terrain::IntGrid& sgrid, uint32_t sx, uint32_t sy, std::vector<partition::QuadtreeNode>& quad_leaves, double q_bits, const PredictorSelector& selector, double /*partition_time_ms*/) {
+        (void)sx; (void)sy;
+        SuperblockStats l_stats;
         
-        std::vector<const predictor::Predictor*> pred_list = bank.ordered();
-        PredictorSelector selector(pred_list);
+        predictor::PredictorBank local_bank;
         
-        std::unordered_map<int32_t, std::size_t> l_glob_left, l_glob_above, l_glob_avg, l_glob_grad, l_glob_jpegls, l_glob_plane, l_glob_gap, l_glob_adap_grad, l_glob_least_squares, l_glob_second_order, l_glob_local_slope;
-        std::unordered_map<int32_t, std::size_t> l_64_left, l_64_above, l_64_avg, l_64_grad, l_64_jpegls, l_64_plane, l_64_gap, l_64_adap_grad, l_64_least_squares, l_64_second_order, l_64_local_slope;
+        partition::BlockView full_sb{&sgrid, 0, 0, sgrid.width, sgrid.height};
         
-        double l_total_adaptive_64_bits = 0;
-        double l_quad_bits = 0;
-        double l_dwt_bits = 0;
-        double l_quad_overhead = 0;
-        std::size_t l_quad_leaves = 0;
+        auto accumulate = [](const std::vector<int32_t>& res, std::unordered_map<int32_t, std::size_t>& counts) {
+            for (int32_t r : res) counts[r]++;
+        };
         
-        QuadtreeStats l_q_stats;
-        PredictorUsage l_p_usage;
-        SubbandStats l_w_stats;
-        ContextStats l_c_stats;
-        ResidualDistributionStats l_r_dist_stats;
-        
-        std::size_t l_ll_zeros=0, l_lh_zeros=0, l_hl_zeros=0, l_hh_zeros=0;
-        std::unordered_map<int32_t, std::size_t> l_ll_map, l_lh_map, l_hl_map, l_hh_map;
-        std::size_t l_ll_count=0, l_lh_count=0, l_hl_count=0, l_hh_count=0;
-        std::size_t l_total_zero_runs=0, l_total_zero_run_length=0;
-        std::size_t l_total_symbols=0, l_total_contexts=0;
-        std::unordered_map<coding::Context, std::size_t> l_global_context_sizes;
-        
-        std::size_t l_easy_count=0, l_medium_count=0, l_hard_count=0;
-        double l_easy_entropy=0, l_medium_entropy=0, l_hard_entropy=0;
-        std::size_t l_exact=0, l_w1=0, l_w2=0, l_w5=0, l_w10=0, l_res_count=0;
-        std::unordered_map<int32_t, std::size_t> l_histogram;
-        
-        while (true) {
-            uint32_t idx = next_superblock_idx.fetch_add(1);
-            if (idx >= num_superblocks_total) break;
-            
-            std::uint32_t sy = (idx / num_superblocks_x) * superblock_size;
-            std::uint32_t sx = (idx % num_superblocks_x) * superblock_size;
-            
-            terrain::IntGrid sgrid;
-            sgrid.width = std::min(superblock_size, grid.width - sx);
-            sgrid.height = std::min(superblock_size, grid.height - sy);
-            sgrid.data.resize(sgrid.width * sgrid.height);
-            sgrid.nodata_mask.resize(sgrid.width * sgrid.height, false);
-            for (std::uint32_t y = 0; y < sgrid.height; ++y) {
-                for (std::uint32_t x = 0; x < sgrid.width; ++x) {
-                    uint32_t s_idx = y * sgrid.width + x;
-                    uint32_t c_idx = (sy + y) * grid.width + (sx + x);
-                    sgrid.data[s_idx] = grid.data[c_idx];
-                    if (!grid.nodata_mask.empty()) sgrid.nodata_mask[s_idx] = grid.nodata_mask[c_idx];
-                }
-            }
-            
-            partition::BlockView full_sb{&sgrid, 0, 0, sgrid.width, sgrid.height};
-            
-            auto accumulate = [](const std::vector<int32_t>& res, std::unordered_map<int32_t, std::size_t>& counts) {
-                for (int32_t r : res) counts[r]++;
-            };
-            
-            predictor::PredictionResult l_glob;
-            bank.left->encode(full_sb, l_glob); accumulate(l_glob.residuals, l_glob_left);
-            predictor::PredictionResult a_glob;
-            bank.above->encode(full_sb, a_glob); accumulate(a_glob.residuals, l_glob_above);
-            predictor::PredictionResult v_glob;
-            bank.average->encode(full_sb, v_glob); accumulate(v_glob.residuals, l_glob_avg);
+        predictor::PredictionResult l_glob;
+        local_bank.left.encode(full_sb, l_glob); accumulate(l_glob.residuals, l_stats.glob_left);
             predictor::PredictionResult g_glob;
-            bank.gradient->encode(full_sb, g_glob); accumulate(g_glob.residuals, l_glob_grad);
+            local_bank.gradient.encode(full_sb, g_glob); accumulate(g_glob.residuals, l_stats.glob_grad);
             predictor::PredictionResult j_glob;
-            bank.jpegls->encode(full_sb, j_glob); accumulate(j_glob.residuals, l_glob_jpegls);
-            predictor::PredictionResult pl_glob;
-            bank.plane->encode(full_sb, pl_glob); accumulate(pl_glob.residuals, l_glob_plane);
+            local_bank.jpegls.encode(full_sb, j_glob); accumulate(j_glob.residuals, l_stats.glob_jpegls);
+            predictor::PredictionResult poly_glob;
+            local_bank.polynomial.encode(full_sb, poly_glob); accumulate(poly_glob.residuals, l_stats.glob_polynomial);
             predictor::PredictionResult gp_glob;
-            bank.gap->encode(full_sb, gp_glob); accumulate(gp_glob.residuals, l_glob_gap);
-            predictor::PredictionResult ag_glob;
-            bank.adaptive_gradient->encode(full_sb, ag_glob); accumulate(ag_glob.residuals, l_glob_adap_grad);
+            local_bank.gap.encode(full_sb, gp_glob); accumulate(gp_glob.residuals, l_stats.glob_gap);
             predictor::PredictionResult ls_glob;
-            bank.least_squares->encode(full_sb, ls_glob); accumulate(ls_glob.residuals, l_glob_least_squares);
-            predictor::PredictionResult so_glob;
-            bank.second_order->encode(full_sb, so_glob); accumulate(so_glob.residuals, l_glob_second_order);
-            predictor::PredictionResult lsp_glob;
-            bank.local_slope->encode(full_sb, lsp_glob); accumulate(lsp_glob.residuals, l_glob_local_slope);
-            
+            local_bank.least_squares.encode(full_sb, ls_glob); accumulate(ls_glob.residuals, l_stats.glob_least_squares);
             const terrain::IntGrid& const_sgrid = sgrid;
             auto blocks64 = partition::FixedGridPartitioner::partition(const_sgrid, 64);
             for (const auto& b : blocks64) {
                 predictor::PredictionResult scratch;
-                bank.left->encode(b, scratch); accumulate(scratch.residuals, l_64_left);
-                bank.above->encode(b, scratch); accumulate(scratch.residuals, l_64_above);
-                bank.average->encode(b, scratch); accumulate(scratch.residuals, l_64_avg);
-                bank.gradient->encode(b, scratch); accumulate(scratch.residuals, l_64_grad);
-                bank.jpegls->encode(b, scratch); accumulate(scratch.residuals, l_64_jpegls);
-                bank.plane->encode(b, scratch); accumulate(scratch.residuals, l_64_plane);
-                bank.gap->encode(b, scratch); accumulate(scratch.residuals, l_64_gap);
-                bank.adaptive_gradient->encode(b, scratch); accumulate(scratch.residuals, l_64_adap_grad);
-                bank.least_squares->encode(b, scratch); accumulate(scratch.residuals, l_64_least_squares);
-                bank.second_order->encode(b, scratch); accumulate(scratch.residuals, l_64_second_order);
-                bank.local_slope->encode(b, scratch); accumulate(scratch.residuals, l_64_local_slope);
-                
+                local_bank.left.encode(b, scratch); accumulate(scratch.residuals, l_stats.block64_left);
+                local_bank.gradient.encode(b, scratch); accumulate(scratch.residuals, l_stats.block64_grad);
+                local_bank.jpegls.encode(b, scratch); accumulate(scratch.residuals, l_stats.block64_jpegls);
+                local_bank.polynomial.encode(b, scratch); accumulate(scratch.residuals, l_stats.block64_polynomial);
+                local_bank.gap.encode(b, scratch); accumulate(scratch.residuals, l_stats.block64_gap);
+                local_bank.least_squares.encode(b, scratch); accumulate(scratch.residuals, l_stats.block64_least_squares);
                 auto res = selector.select(b);
-                l_total_adaptive_64_bits += res.total_bits;
+                l_stats.total_adaptive_64_bits += res.total_bits;
                 
                 double block_entropy = calculate_entropy(res.best_encoded.residuals);
-                if (block_entropy < 3.0) { l_easy_count++; l_easy_entropy += block_entropy; }
-                else if (block_entropy < 7.0) { l_medium_count++; l_medium_entropy += block_entropy; }
-                else { l_hard_count++; l_hard_entropy += block_entropy; }
+                if (block_entropy < 3.0) { l_stats.easy_count++; l_stats.easy_entropy += block_entropy; }
+                else if (block_entropy < 7.0) { l_stats.medium_count++; l_stats.medium_entropy += block_entropy; }
+                else { l_stats.hard_count++; l_stats.hard_entropy += block_entropy; }
                 
             }
             
-            double q_bits = 0.0;
-            auto quad_leaves = partition::QuadtreePartitioner::partition(sgrid, 512, 64, selector, q_bits);
-            l_quad_bits += q_bits;
-            l_quad_leaves += quad_leaves.size();
+            l_stats.quad_bits += q_bits;
+            l_stats.quad_leaves += quad_leaves.size();
             
             double sum_leaf_bits = 0.0;
             for (auto& leaf : quad_leaves) {
                 sum_leaf_bits += leaf.selection.total_bits;
             }
-            l_quad_overhead += (q_bits - sum_leaf_bits);
+            l_stats.quad_overhead += (q_bits - sum_leaf_bits);
             
             for (auto& leaf : quad_leaves) {
                 double mag_sum = 0;
                 for (int32_t r : leaf.selection.best_encoded.residuals) {
                     mag_sum += std::abs(r);
-                    l_histogram[r]++;
-                    l_res_count++;
+                    l_stats.histogram[r]++;
+                    l_stats.res_count++;
                     int32_t abs_r = std::abs(r);
-                    if (abs_r == 0) l_exact++;
-                    if (abs_r <= 1) l_w1++;
-                    if (abs_r <= 2) l_w2++;
-                    if (abs_r <= 5) l_w5++;
-                    if (abs_r <= 10) l_w10++;
+                    if (abs_r == 0) l_stats.exact++;
+                    if (abs_r <= 1) l_stats.w1++;
+                    if (abs_r <= 2) l_stats.w2++;
+                    if (abs_r <= 5) l_stats.w5++;
+                    if (abs_r <= 10) l_stats.w10++;
                 }
                 if (!leaf.selection.best_encoded.residuals.empty()) {
                     mag_sum /= leaf.selection.best_encoded.residuals.size();
                 }
                 
-                if (leaf.selection.best_predictor == bank.left.get()) { l_p_usage.left_count++; l_p_usage.left_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.above.get()) { l_p_usage.above_count++; l_p_usage.above_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.average.get()) { l_p_usage.average_count++; l_p_usage.average_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.gradient.get()) { l_p_usage.gradient_count++; l_p_usage.gradient_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.jpegls.get()) { l_p_usage.jpegls_count++; l_p_usage.jpegls_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.plane.get()) { l_p_usage.plane_count++; l_p_usage.plane_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.gap.get()) { l_p_usage.gap_count++; l_p_usage.gap_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.adaptive_gradient.get()) { l_p_usage.adaptive_gradient_count++; l_p_usage.adaptive_gradient_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.least_squares.get()) { l_p_usage.least_squares_count++; l_p_usage.least_squares_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.second_order.get()) { l_p_usage.second_order_count++; l_p_usage.second_order_mag_sum += mag_sum; }
-                else if (leaf.selection.best_predictor == bank.local_slope.get()) { l_p_usage.local_slope_count++; l_p_usage.local_slope_mag_sum += mag_sum; }
-
-                uint32_t w = leaf.block.width;
-                if (w == 512) l_q_stats.size_512_count++;
-                else if (w == 256) l_q_stats.size_256_count++;
-                else if (w == 128) l_q_stats.size_128_count++;
-                else l_q_stats.size_64_count++;
-                uint32_t max_levels = 3;
-                uint32_t dim = std::min(leaf.block.width, leaf.block.height);
-                while (max_levels > 0 && dim < (1u << max_levels)) {
-                    max_levels--;
+                double fb = leaf.selection.total_bits;
+                std::size_t fp = static_cast<std::size_t>(leaf.block.width) * leaf.block.height;
+                if (leaf.selection.best_predictor == &global_bank.left) { l_stats.p_usage.left_count++; l_stats.p_usage.left_mag_sum += mag_sum; l_stats.p_usage.left_final_bits += fb; l_stats.p_usage.left_final_pixels += fp; }
+                else if (leaf.selection.best_predictor == &global_bank.gradient) { l_stats.p_usage.gradient_count++; l_stats.p_usage.gradient_mag_sum += mag_sum; l_stats.p_usage.gradient_final_bits += fb; l_stats.p_usage.gradient_final_pixels += fp; }
+                else if (leaf.selection.best_predictor == &global_bank.jpegls) { l_stats.p_usage.jpegls_count++; l_stats.p_usage.jpegls_mag_sum += mag_sum; l_stats.p_usage.jpegls_final_bits += fb; l_stats.p_usage.jpegls_final_pixels += fp; }
+                else if (leaf.selection.best_predictor == &global_bank.polynomial) { l_stats.p_usage.polynomial_count++; l_stats.p_usage.polynomial_mag_sum += mag_sum; l_stats.p_usage.polynomial_final_bits += fb; l_stats.p_usage.polynomial_final_pixels += fp; }
+                else if (leaf.selection.best_predictor == &global_bank.gap) { l_stats.p_usage.gap_count++; l_stats.p_usage.gap_mag_sum += mag_sum; l_stats.p_usage.gap_final_bits += fb; l_stats.p_usage.gap_final_pixels += fp; }
+                else if (leaf.selection.best_predictor == &global_bank.least_squares) { l_stats.p_usage.least_squares_count++; l_stats.p_usage.least_squares_mag_sum += mag_sum; l_stats.p_usage.least_squares_final_bits += fb; l_stats.p_usage.least_squares_final_pixels += fp; }
+                
+                if (leaf.selection.use_second_order) {
+                    l_stats.p_usage.second_order_pass_count++;
                 }
+                l_stats.p_usage.second_order_bits_savings += leaf.selection.second_order_bits_savings;
+                l_stats.p_usage.base_bits_total += leaf.selection.base_bits;
+                
+                uint32_t w = leaf.block.width;
+                if (w == 512) l_stats.q_stats.size_512_count++;
+                else if (w == 256) l_stats.q_stats.size_256_count++;
+                else if (w == 128) l_stats.q_stats.size_128_count++;
+                else l_stats.q_stats.size_64_count++;
+                uint32_t max_levels = coding::max_wavelet_levels(leaf.block.width, leaf.block.height);
                 
                 std::vector<int32_t> data = leaf.selection.best_encoded.residuals;
-                if (max_levels > 0) {
-                    transform::CDF53Transform::forward_2d(data, leaf.block.width, leaf.block.height, max_levels);
+                bool has_prec = (leaf.selection.best_prec_predictor != nullptr);
+                if (data.empty()) {
+                    size_t required_size = leaf.block.width * leaf.block.height * (has_prec ? 2 : 1);
+                    data.resize(required_size, 0);
                 }
                 
-                auto symbols = coding::generate_symbols(data, leaf.block.width, leaf.block.height, max_levels, model);
-                
-                std::unordered_set<coding::Context> block_contexts;
-                
-                double mag_class_bits = 0.0;
-                double remainder_bits = 0.0;
-                double run_bits = 0.0;
-                uint32_t num_symbols = symbols.size();
-                uint32_t num_zero_runs = 0;
+                if (options.enable_wavelet_analysis) {
+                    std::vector<int32_t> wv_data = data;
+                    
+                    if (max_levels > 0) {
+                        uint32_t ll_w = leaf.block.width >> 1;
+                        uint32_t ll_h = leaf.block.height >> 1;
+                        for (uint32_t y = 0; y < leaf.block.height; ++y) {
+                            for (uint32_t x = 0; x < leaf.block.width; ++x) {
+                                int32_t val = wv_data[y * leaf.block.width + x];
+                                bool is_zero = (val == 0);
+                                if (x < ll_w && y < ll_h) {
+                                    l_stats.ll_map[val]++; l_stats.ll_count++; if (is_zero) l_stats.ll_zeros++;
+                                } else if (x >= ll_w && y < ll_h) {
+                                    l_stats.hl_map[val]++; l_stats.hl_count++; if (is_zero) l_stats.hl_zeros++;
+                                } else if (x < ll_w && y >= ll_h) {
+                                    l_stats.lh_map[val]++; l_stats.lh_count++; if (is_zero) l_stats.lh_zeros++;
+                                } else {
+                                    l_stats.hh_map[val]++; l_stats.hh_count++; if (is_zero) l_stats.hh_zeros++;
+                                }
+                            }
+                        }
+                    }
+                    
+                    std::vector<int32_t> wv_mag_classes;
+                    std::vector<int32_t> wv_run_lengths;
+                    std::unordered_map<coding::Context, uint32_t> wv_context_sizes;
+                    uint32_t wv_remainder_bits_int = 0;
+                    coding::analyze_symbols(wv_data, leaf.block.width, leaf.block.height, model, false, wv_mag_classes, wv_run_lengths, wv_context_sizes, wv_remainder_bits_int);
+                    
+                    double wv_mag_class_bits = calculate_entropy(wv_mag_classes) * wv_mag_classes.size();
+                    double wv_run_bits = wv_run_lengths.empty() ? 0 : calculate_entropy(wv_run_lengths) * wv_run_lengths.size();
+                    double wv_residual = wv_mag_class_bits + wv_remainder_bits_int + wv_run_bits;
+                    
+                    double c_id = 8.0;
+                    double c_params = leaf.selection.best_encoded.parameters.size() * 32.0;
+                    l_stats.dwt_bits += c_id + c_params + wv_residual;
+                }
                 
                 std::vector<int32_t> mag_classes;
                 std::vector<int32_t> run_lengths;
+                std::unordered_map<coding::Context, uint32_t> context_sizes;
+                uint32_t remainder_bits_int = 0;
                 
-                for (const auto& sym : symbols) {
-                    block_contexts.insert(sym.context);
-                    l_total_symbols++;
-                    
-                    mag_classes.push_back(sym.magnitude_class);
-                    if (sym.magnitude_class == 0) {
-                        run_lengths.push_back(sym.run_length);
-                        num_zero_runs++;
-                        
-                        l_total_zero_runs++;
-                        l_total_zero_run_length += sym.run_length;
-                        l_w_stats.max_zero_run = std::max(l_w_stats.max_zero_run, static_cast<std::size_t>(sym.run_length));
-                        
-                        if (sym.context.subband == 0) l_ll_zeros += sym.run_length;
-                        else if (sym.context.subband == 1) l_lh_zeros += sym.run_length;
-                        else if (sym.context.subband == 2) l_hl_zeros += sym.run_length;
-                        else if (sym.context.subband == 3) l_hh_zeros += sym.run_length;
-                        
-                        for (uint32_t i=0; i < sym.run_length; ++i) {
-                            if (sym.context.subband == 0) { l_ll_map[0]++; l_ll_count++; }
-                            else if (sym.context.subband == 1) { l_lh_map[0]++; l_lh_count++; }
-                            else if (sym.context.subband == 2) { l_hl_map[0]++; l_hl_count++; }
-                            else if (sym.context.subband == 3) { l_hh_map[0]++; l_hh_count++; }
-                        }
-                    } else {
-                        if (sym.magnitude_class > 1) {
-                            remainder_bits += (sym.magnitude_class - 1);
-                        }
-                        
-                        uint32_t zz = (1u << (sym.magnitude_class - 1)) | sym.remainder;
-                        int32_t val = (zz >> 1) ^ -(zz & 1); // inverse zigzag
-                        
-                        if (sym.context.subband == 0) { l_ll_map[val]++; l_ll_count++; }
-                        else if (sym.context.subband == 1) { l_lh_map[val]++; l_lh_count++; }
-                        else if (sym.context.subband == 2) { l_hl_map[val]++; l_hl_count++; }
-                        else if (sym.context.subband == 3) { l_hh_map[val]++; l_hh_count++; }
-                    }
-                    
-                    l_global_context_sizes[sym.context]++;
+                coding::analyze_symbols(data, leaf.block.width, leaf.block.height, model, has_prec, mag_classes, run_lengths, context_sizes, remainder_bits_int);
+                
+                std::unordered_set<coding::Context> block_contexts;
+                for (const auto& kv : context_sizes) {
+                    block_contexts.insert(kv.first);
+                    l_stats.global_context_sizes[kv.first] += kv.second;
                 }
                 
-                l_total_contexts += block_contexts.size();
+                l_stats.total_symbols += mag_classes.size();
                 
-                mag_class_bits = calculate_entropy(mag_classes) * num_symbols;
-                if (!run_lengths.empty()) {
-                    run_bits = calculate_entropy(run_lengths) * num_zero_runs;
+                for (uint32_t run : run_lengths) {
+                    l_stats.total_zero_runs++;
+                    l_stats.total_zero_run_length += run;
+                    l_stats.w_stats.max_zero_run = std::max(l_stats.w_stats.max_zero_run, static_cast<std::size_t>(run));
                 }
                 
-                double c_id = 8.0;
-                double c_params = leaf.selection.best_encoded.parameters.size() * 32.0;
-                double c_residual = mag_class_bits + remainder_bits + run_bits;
-                
-                l_dwt_bits += c_id + c_params + c_residual;
+                l_stats.total_contexts += block_contexts.size();
             }
-        }
         
         std::lock_guard<std::mutex> lock(stats_mutex);
-        auto merge_counts = [](std::unordered_map<int32_t, std::size_t>& dst, const std::unordered_map<int32_t, std::size_t>& src) {
-            for (const auto& kv : src) dst[kv.first] += kv.second;
-        };
-        merge_counts(glob_left_counts, l_glob_left);
-        merge_counts(glob_above_counts, l_glob_above);
-        merge_counts(glob_avg_counts, l_glob_avg);
-        merge_counts(glob_grad_counts, l_glob_grad);
-        merge_counts(glob_jpegls_counts, l_glob_jpegls);
-        merge_counts(glob_plane_counts, l_glob_plane);
-        merge_counts(glob_gap_counts, l_glob_gap);
-        merge_counts(glob_adap_grad_counts, l_glob_adap_grad);
-        merge_counts(glob_least_squares_counts, l_glob_least_squares);
-        merge_counts(glob_second_order_counts, l_glob_second_order);
-        merge_counts(glob_local_slope_counts, l_glob_local_slope);
-        
-        merge_counts(block64_left_counts, l_64_left);
-        merge_counts(block64_above_counts, l_64_above);
-        merge_counts(block64_avg_counts, l_64_avg);
-        merge_counts(block64_grad_counts, l_64_grad);
-        merge_counts(block64_jpegls_counts, l_64_jpegls);
-        merge_counts(block64_plane_counts, l_64_plane);
-        merge_counts(block64_gap_counts, l_64_gap);
-        merge_counts(block64_adap_grad_counts, l_64_adap_grad);
-        merge_counts(block64_least_squares_counts, l_64_least_squares);
-        merge_counts(block64_second_order_counts, l_64_second_order);
-        merge_counts(block64_local_slope_counts, l_64_local_slope);
-        
-        total_adaptive_64_bits += l_total_adaptive_64_bits;
-        quad_bits_total += l_quad_bits;
-        quad_overhead_total += l_quad_overhead;
-        dwt_bits_total += l_dwt_bits;
-        total_quad_leaves += l_quad_leaves;
-        
-        q_stats.size_512_count += l_q_stats.size_512_count;
-        q_stats.size_256_count += l_q_stats.size_256_count;
-        q_stats.size_128_count += l_q_stats.size_128_count;
-        q_stats.size_64_count += l_q_stats.size_64_count;
-        
-        p_usage.left_count += l_p_usage.left_count; p_usage.left_mag_sum += l_p_usage.left_mag_sum;
-        p_usage.above_count += l_p_usage.above_count; p_usage.above_mag_sum += l_p_usage.above_mag_sum;
-        p_usage.average_count += l_p_usage.average_count; p_usage.average_mag_sum += l_p_usage.average_mag_sum;
-        p_usage.gradient_count += l_p_usage.gradient_count; p_usage.gradient_mag_sum += l_p_usage.gradient_mag_sum;
-        p_usage.jpegls_count += l_p_usage.jpegls_count; p_usage.jpegls_mag_sum += l_p_usage.jpegls_mag_sum;
-        p_usage.plane_count += l_p_usage.plane_count; p_usage.plane_mag_sum += l_p_usage.plane_mag_sum;
-        p_usage.gap_count += l_p_usage.gap_count; p_usage.gap_mag_sum += l_p_usage.gap_mag_sum;
-        p_usage.adaptive_gradient_count += l_p_usage.adaptive_gradient_count; p_usage.adaptive_gradient_mag_sum += l_p_usage.adaptive_gradient_mag_sum;
-        p_usage.least_squares_count += l_p_usage.least_squares_count; p_usage.least_squares_mag_sum += l_p_usage.least_squares_mag_sum;
-        p_usage.second_order_count += l_p_usage.second_order_count; p_usage.second_order_mag_sum += l_p_usage.second_order_mag_sum;
-        p_usage.local_slope_count += l_p_usage.local_slope_count; p_usage.local_slope_mag_sum += l_p_usage.local_slope_mag_sum;
-        
-        ll_zeros += l_ll_zeros; lh_zeros += l_lh_zeros; hl_zeros += l_hl_zeros; hh_zeros += l_hh_zeros;
-        
-        for (const auto& kv : l_ll_map) { ll_map[kv.first] += kv.second; } ll_count += l_ll_count;
-        for (const auto& kv : l_lh_map) { lh_map[kv.first] += kv.second; } lh_count += l_lh_count;
-        for (const auto& kv : l_hl_map) { hl_map[kv.first] += kv.second; } hl_count += l_hl_count;
-        for (const auto& kv : l_hh_map) { hh_map[kv.first] += kv.second; } hh_count += l_hh_count;
-
-        total_zero_runs += l_total_zero_runs;
-        total_zero_run_length += l_total_zero_run_length;
-        w_stats.max_zero_run = std::max(w_stats.max_zero_run, l_w_stats.max_zero_run);
-        
-        total_symbols += l_total_symbols;
-        total_contexts += l_total_contexts;
-        for (const auto& kv : l_global_context_sizes) {
-            global_context_sizes[kv.first] += kv.second;
-        }
-        
-        easy_count += l_easy_count; medium_count += l_medium_count; hard_count += l_hard_count;
-        easy_entropy += l_easy_entropy; medium_entropy += l_medium_entropy; hard_entropy += l_hard_entropy;
-        exact += l_exact; w1 += l_w1; w2 += l_w2; w5 += l_w5; w10 += l_w10; res_count += l_res_count;
-        for (const auto& kv : l_histogram) histogram[kv.first] += kv.second;
-    };
+        global_stats.merge(l_stats);
+    });
     
-    uint32_t num_threads = std::thread::hardware_concurrency();
-    std::vector<std::thread> threads;
-    for (uint32_t i = 0; i < num_threads; ++i) {
-        threads.emplace_back(worker);
+    report.quadtree_leaves = global_stats.quad_leaves;
+    if (global_stats.res_count > 0) {
+        report.predictor_confidence.pct_exact = (double)global_stats.exact / global_stats.res_count * 100.0;
+        report.predictor_confidence.pct_within_1 = (double)global_stats.w1 / global_stats.res_count * 100.0;
+        report.predictor_confidence.pct_within_2 = (double)global_stats.w2 / global_stats.res_count * 100.0;
+        report.predictor_confidence.pct_within_5 = (double)global_stats.w5 / global_stats.res_count * 100.0;
+        report.predictor_confidence.pct_within_10 = (double)global_stats.w10 / global_stats.res_count * 100.0;
     }
-    for (auto& t : threads) {
-        t.join();
-    }
-    
-    report.quadtree_leaves = total_quad_leaves;
-    if (res_count > 0) {
-        report.predictor_confidence.pct_exact = (double)exact / res_count * 100.0;
-        report.predictor_confidence.pct_within_1 = (double)w1 / res_count * 100.0;
-        report.predictor_confidence.pct_within_2 = (double)w2 / res_count * 100.0;
-        report.predictor_confidence.pct_within_5 = (double)w5 / res_count * 100.0;
-        report.predictor_confidence.pct_within_10 = (double)w10 / res_count * 100.0;
-    }
-    std::size_t total_difficulty = easy_count + medium_count + hard_count;
+    std::size_t total_difficulty = global_stats.easy_count + global_stats.medium_count + global_stats.hard_count;
     if (total_difficulty > 0) {
-        report.prediction_difficulty.easy_pct = (double)easy_count / total_difficulty * 100.0;
-        report.prediction_difficulty.medium_pct = (double)medium_count / total_difficulty * 100.0;
-        report.prediction_difficulty.hard_pct = (double)hard_count / total_difficulty * 100.0;
-        if (easy_count > 0) report.prediction_difficulty.easy_avg_entropy = easy_entropy / easy_count;
-        if (medium_count > 0) report.prediction_difficulty.medium_avg_entropy = medium_entropy / medium_count;
-        if (hard_count > 0) report.prediction_difficulty.hard_avg_entropy = hard_entropy / hard_count;
+        report.prediction_difficulty.easy_pct = (double)global_stats.easy_count / total_difficulty * 100.0;
+        report.prediction_difficulty.medium_pct = (double)global_stats.medium_count / total_difficulty * 100.0;
+        report.prediction_difficulty.hard_pct = (double)global_stats.hard_count / total_difficulty * 100.0;
+        if (global_stats.easy_count > 0) report.prediction_difficulty.easy_avg_entropy = global_stats.easy_entropy / global_stats.easy_count;
+        if (global_stats.medium_count > 0) report.prediction_difficulty.medium_avg_entropy = global_stats.medium_entropy / global_stats.medium_count;
+        if (global_stats.hard_count > 0) report.prediction_difficulty.hard_avg_entropy = global_stats.hard_entropy / global_stats.hard_count;
     }
-    for (const auto& kv : histogram) {
-        report.residual_histogram.push_back({kv.first, (double)kv.second / res_count * 100.0});
+    for (const auto& kv : global_stats.histogram) {
+        report.residual_histogram.push_back({kv.first, (double)kv.second / global_stats.res_count * 100.0});
     }
     std::sort(report.residual_histogram.begin(), report.residual_histogram.end());
-    report.quadtree_stats = q_stats;
-    report.predictor_usage = p_usage;
+    report.quadtree_stats = global_stats.q_stats;
+    report.predictor_usage = global_stats.p_usage;
     
+    report.predictor_usage.left_count = global_stats.p_usage.left_count;
+    report.predictor_usage.gradient_count = global_stats.p_usage.gradient_count;
+    report.predictor_usage.jpegls_count = global_stats.p_usage.jpegls_count;
+    report.predictor_usage.polynomial_count = global_stats.p_usage.polynomial_count;
+    report.predictor_usage.gap_count = global_stats.p_usage.gap_count;
+    report.predictor_usage.least_squares_count = global_stats.p_usage.least_squares_count;
+    report.predictor_usage.second_order_pass_count = global_stats.p_usage.second_order_pass_count;
+    
+    if (global_stats.p_usage.base_bits_total > 0) {
+        report.predictor_usage.second_order_bits_savings_pct = (global_stats.p_usage.second_order_bits_savings / global_stats.p_usage.base_bits_total) * 100.0;
+    }
+    
+    report.predictor_usage.left_mag_sum = global_stats.p_usage.left_mag_sum;
+    report.predictor_usage.gradient_mag_sum = global_stats.p_usage.gradient_mag_sum;
+    report.predictor_usage.jpegls_mag_sum = global_stats.p_usage.jpegls_mag_sum;
+    report.predictor_usage.polynomial_mag_sum = global_stats.p_usage.polynomial_mag_sum;
+    report.predictor_usage.gap_mag_sum = global_stats.p_usage.gap_mag_sum;
+    report.predictor_usage.least_squares_mag_sum = global_stats.p_usage.least_squares_mag_sum;
+
+    report.predictor_usage.left_final_bits = global_stats.p_usage.left_final_bits;
+    report.predictor_usage.gradient_final_bits = global_stats.p_usage.gradient_final_bits;
+    report.predictor_usage.jpegls_final_bits = global_stats.p_usage.jpegls_final_bits;
+    report.predictor_usage.polynomial_final_bits = global_stats.p_usage.polynomial_final_bits;
+    report.predictor_usage.gap_final_bits = global_stats.p_usage.gap_final_bits;
+    report.predictor_usage.least_squares_final_bits = global_stats.p_usage.least_squares_final_bits;
+
+    report.predictor_usage.left_final_pixels = global_stats.p_usage.left_final_pixels;
+    report.predictor_usage.gradient_final_pixels = global_stats.p_usage.gradient_final_pixels;
+    report.predictor_usage.jpegls_final_pixels = global_stats.p_usage.jpegls_final_pixels;
+    report.predictor_usage.polynomial_final_pixels = global_stats.p_usage.polynomial_final_pixels;
+    report.predictor_usage.gap_final_pixels = global_stats.p_usage.gap_final_pixels;
+    report.predictor_usage.least_squares_final_pixels = global_stats.p_usage.least_squares_final_pixels;
+
     std::size_t grid_samples = report.sample_count;
-    report.global_predictors.left_entropy = calculate_entropy(glob_left_counts, grid_samples);
-    report.global_predictors.above_entropy = calculate_entropy(glob_above_counts, grid_samples);
-    report.global_predictors.average_entropy = calculate_entropy(glob_avg_counts, grid_samples);
-    report.global_predictors.gradient_entropy = calculate_entropy(glob_grad_counts, grid_samples);
-    report.global_predictors.jpegls_entropy = calculate_entropy(glob_jpegls_counts, grid_samples);
-    report.global_predictors.plane_entropy = calculate_entropy(glob_plane_counts, grid_samples);
-    report.global_predictors.gap_entropy = calculate_entropy(glob_gap_counts, grid_samples);
-    report.global_predictors.adaptive_gradient_entropy = calculate_entropy(glob_adap_grad_counts, grid_samples);
-    report.global_predictors.least_squares_entropy = calculate_entropy(glob_least_squares_counts, grid_samples);
-    report.global_predictors.second_order_entropy = calculate_entropy(glob_second_order_counts, grid_samples);
-    report.global_predictors.local_slope_entropy = calculate_entropy(glob_local_slope_counts, grid_samples);
-    
-    report.block64_predictors.left_entropy = calculate_entropy(block64_left_counts, grid_samples);
-    report.block64_predictors.above_entropy = calculate_entropy(block64_above_counts, grid_samples);
-    report.block64_predictors.average_entropy = calculate_entropy(block64_avg_counts, grid_samples);
-    report.block64_predictors.gradient_entropy = calculate_entropy(block64_grad_counts, grid_samples);
-    report.block64_predictors.jpegls_entropy = calculate_entropy(block64_jpegls_counts, grid_samples);
-    report.block64_predictors.plane_entropy = calculate_entropy(block64_plane_counts, grid_samples);
-    report.block64_predictors.gap_entropy = calculate_entropy(block64_gap_counts, grid_samples);
-    report.block64_predictors.adaptive_gradient_entropy = calculate_entropy(block64_adap_grad_counts, grid_samples);
-    report.block64_predictors.least_squares_entropy = calculate_entropy(block64_least_squares_counts, grid_samples);
-    report.block64_predictors.second_order_entropy = calculate_entropy(block64_second_order_counts, grid_samples);
-    report.block64_predictors.local_slope_entropy = calculate_entropy(block64_local_slope_counts, grid_samples);
-    
-    report.adaptive_block64_entropy = total_adaptive_64_bits / grid_samples;
-    report.quadtree_entropy = quad_bits_total / grid_samples;
-    report.dwt_quadtree_entropy = (dwt_bits_total + quad_overhead_total) / grid_samples;
+    report.global_predictors.left_entropy = calculate_entropy(global_stats.glob_left, grid_samples);
+    report.global_predictors.gradient_entropy = calculate_entropy(global_stats.glob_grad, grid_samples);
+    report.global_predictors.jpegls_entropy = calculate_entropy(global_stats.glob_jpegls, grid_samples);
+    report.global_predictors.polynomial_entropy = calculate_entropy(global_stats.glob_polynomial, grid_samples);
+    report.global_predictors.gap_entropy = calculate_entropy(global_stats.glob_gap, grid_samples);
+    report.global_predictors.least_squares_entropy = calculate_entropy(global_stats.glob_least_squares, grid_samples);
+    report.block64_predictors.left_entropy = calculate_entropy(global_stats.block64_left, grid_samples);
+    report.block64_predictors.gradient_entropy = calculate_entropy(global_stats.block64_grad, grid_samples);
+    report.block64_predictors.jpegls_entropy = calculate_entropy(global_stats.block64_jpegls, grid_samples);
+    report.block64_predictors.polynomial_entropy = calculate_entropy(global_stats.block64_polynomial, grid_samples);
+    report.block64_predictors.gap_entropy = calculate_entropy(global_stats.block64_gap, grid_samples);
+    report.block64_predictors.least_squares_entropy = calculate_entropy(global_stats.block64_least_squares, grid_samples);
+    report.adaptive_block64_entropy = global_stats.total_adaptive_64_bits / grid_samples;
+    report.quadtree_entropy = global_stats.quad_bits / grid_samples;
+    report.dwt_quadtree_entropy = (global_stats.dwt_bits + global_stats.quad_overhead) / grid_samples;
     
     {
         predictor::PredictorBank temp_bank;
         predictor::PredictionResult temp_res;
 
-        temp_bank.gradient->encode(partition::BlockView{&grid, 0, 0, grid.width, grid.height}, temp_res);
+        temp_bank.gradient.encode(partition::BlockView{&grid, 0, 0, grid.width, grid.height}, temp_res);
         compute_correlation(temp_res.residuals.data(), grid.width, grid.height, 
                             report.correlation_stats.residual_horizontal, 
                             report.correlation_stats.residual_vertical, 
@@ -563,7 +481,7 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     double res_mean = 0;
     size_t res_zeros = 0;
     std::size_t grad_count = 0;
-    for (const auto& kv : glob_grad_counts) {
+    for (const auto& kv : global_stats.glob_grad) {
         if (kv.first == 0) res_zeros += kv.second;
         res_mean += std::abs(kv.first) * kv.second;
         grad_count += kv.second;
@@ -573,14 +491,14 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     if (grad_count > 0) report.residual_dist_stats.zero_pct = (double)res_zeros / grad_count * 100.0;
     
     double res_var = 0;
-    for (const auto& kv : glob_grad_counts) {
+    for (const auto& kv : global_stats.glob_grad) {
         double d = std::abs(kv.first) - res_mean;
         res_var += (d * d) * kv.second;
     }
     if (grad_count > 0) report.residual_dist_stats.variance = res_var / grad_count;
     
     if (grad_count > 0) {
-        std::vector<std::pair<int32_t, std::size_t>> sorted_grad(glob_grad_counts.begin(), glob_grad_counts.end());
+        std::vector<std::pair<int32_t, std::size_t>> sorted_grad(global_stats.glob_grad.begin(), global_stats.glob_grad.end());
         std::sort(sorted_grad.begin(), sorted_grad.end(), [](const auto& a, const auto& b) {
             return std::abs(a.first) < std::abs(b.first);
         });
@@ -610,23 +528,22 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
         std::abs(report.correlation_stats.residual_diagonal)
     });
     
-    // Wavelets are only beneficial if there is remaining spatial structure (correlation > 0.3)
-    // If correlation is near 0, the residuals are noise and DWT will just expand entropy.
-    report.transform_eval_stats.decision_use_wavelet = (max_res_corr > 0.3);
+    report.transform_eval_stats.decision_use_wavelet = (max_res_corr > 0.4 && report.adaptive_block64_entropy > 3.0);
     
-    if (ll_count > 0) report.wavelet_stats.ll_count = ll_count;
-    report.wavelet_stats.lh_count = lh_count;
-    report.wavelet_stats.hl_count = hl_count;
-    report.wavelet_stats.hh_count = hh_count;
-    if (ll_count > 0) report.wavelet_stats.ll_zero_pct = (double)ll_zeros / ll_count * 100.0;
-    if (lh_count > 0) report.wavelet_stats.lh_zero_pct = (double)lh_zeros / lh_count * 100.0;
-    if (hl_count > 0) report.wavelet_stats.hl_zero_pct = (double)hl_zeros / hl_count * 100.0;
-    if (hh_count > 0) report.wavelet_stats.hh_zero_pct = (double)hh_zeros / hh_count * 100.0;
+    if (options.enable_wavelet_analysis) {
+        if (global_stats.ll_count > 0) report.wavelet_stats.ll_count = global_stats.ll_count;
+        report.wavelet_stats.lh_count = global_stats.lh_count;
+        report.wavelet_stats.hl_count = global_stats.hl_count;
+        report.wavelet_stats.hh_count = global_stats.hh_count;
+        if (global_stats.ll_count > 0) report.wavelet_stats.ll_zero_pct = (double)global_stats.ll_zeros / global_stats.ll_count * 100.0;
+        if (global_stats.lh_count > 0) report.wavelet_stats.lh_zero_pct = (double)global_stats.lh_zeros / global_stats.lh_count * 100.0;
+        if (global_stats.hl_count > 0) report.wavelet_stats.hl_zero_pct = (double)global_stats.hl_zeros / global_stats.hl_count * 100.0;
+        if (global_stats.hh_count > 0) report.wavelet_stats.hh_zero_pct = (double)global_stats.hh_zeros / global_stats.hh_count * 100.0;
     
-    report.wavelet_stats.ll_entropy = calculate_entropy(ll_map, ll_count);
-    report.wavelet_stats.lh_entropy = calculate_entropy(lh_map, lh_count);
-    report.wavelet_stats.hl_entropy = calculate_entropy(hl_map, hl_count);
-    report.wavelet_stats.hh_entropy = calculate_entropy(hh_map, hh_count);
+    report.wavelet_stats.ll_entropy = calculate_entropy(global_stats.ll_map, global_stats.ll_count);
+    report.wavelet_stats.lh_entropy = calculate_entropy(global_stats.lh_map, global_stats.lh_count);
+    report.wavelet_stats.hl_entropy = calculate_entropy(global_stats.hl_map, global_stats.hl_count);
+    report.wavelet_stats.hh_entropy = calculate_entropy(global_stats.hh_map, global_stats.hh_count);
     
     auto compute_subband_metrics = [](const std::unordered_map<int32_t, std::size_t>& counts, std::size_t count, double& mean, double& var, double& energy) {
         if (count == 0) return;
@@ -647,10 +564,10 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     };
     
     double ll_e=0, lh_e=0, hl_e=0, hh_e=0;
-    compute_subband_metrics(ll_map, ll_count, report.wavelet_stats.ll_mean_mag, report.wavelet_stats.ll_var, ll_e);
-    compute_subband_metrics(lh_map, lh_count, report.wavelet_stats.lh_mean_mag, report.wavelet_stats.lh_var, lh_e);
-    compute_subband_metrics(hl_map, hl_count, report.wavelet_stats.hl_mean_mag, report.wavelet_stats.hl_var, hl_e);
-    compute_subband_metrics(hh_map, hh_count, report.wavelet_stats.hh_mean_mag, report.wavelet_stats.hh_var, hh_e);
+    compute_subband_metrics(global_stats.ll_map, global_stats.ll_count, report.wavelet_stats.ll_mean_mag, report.wavelet_stats.ll_var, ll_e);
+    compute_subband_metrics(global_stats.lh_map, global_stats.lh_count, report.wavelet_stats.lh_mean_mag, report.wavelet_stats.lh_var, lh_e);
+    compute_subband_metrics(global_stats.hl_map, global_stats.hl_count, report.wavelet_stats.hl_mean_mag, report.wavelet_stats.hl_var, hl_e);
+    compute_subband_metrics(global_stats.hh_map, global_stats.hh_count, report.wavelet_stats.hh_mean_mag, report.wavelet_stats.hh_var, hh_e);
     
     double total_energy = ll_e + lh_e + hl_e + hh_e;
     if (total_energy > 0) {
@@ -661,11 +578,11 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
     }
     
     std::unordered_map<int32_t, std::size_t> all_coeffs_map;
-    for (const auto& kv : ll_map) all_coeffs_map[kv.first] += kv.second;
-    for (const auto& kv : lh_map) all_coeffs_map[kv.first] += kv.second;
-    for (const auto& kv : hl_map) all_coeffs_map[kv.first] += kv.second;
-    for (const auto& kv : hh_map) all_coeffs_map[kv.first] += kv.second;
-    std::size_t total_wv_count = ll_count + lh_count + hl_count + hh_count;
+    for (const auto& kv : global_stats.ll_map) all_coeffs_map[kv.first] += kv.second;
+    for (const auto& kv : global_stats.lh_map) all_coeffs_map[kv.first] += kv.second;
+    for (const auto& kv : global_stats.hl_map) all_coeffs_map[kv.first] += kv.second;
+    for (const auto& kv : global_stats.hh_map) all_coeffs_map[kv.first] += kv.second;
+    std::size_t total_wv_count = global_stats.ll_count + global_stats.lh_count + global_stats.hl_count + global_stats.hh_count;
     if (total_wv_count > 0) {
         std::vector<std::pair<int32_t, std::size_t>> sorted_wv(all_coeffs_map.begin(), all_coeffs_map.end());
         std::sort(sorted_wv.begin(), sorted_wv.end(), [](const auto& a, const auto& b) {
@@ -686,21 +603,34 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
         }
     }
     
-    if (total_zero_runs > 0) {
-        report.wavelet_stats.avg_zero_run = (double)total_zero_run_length / total_zero_runs;
-    }
-    report.wavelet_stats.max_zero_run = w_stats.max_zero_run;
+    report.transform_eval_stats.actual_wavelet_benefit = report.quadtree_entropy - report.dwt_quadtree_entropy;
+    bool actual_benefit_positive = (report.transform_eval_stats.actual_wavelet_benefit > 0);
+    report.transform_eval_stats.prediction_correct = (report.transform_eval_stats.decision_use_wavelet == actual_benefit_positive);
     
-    if (total_quad_leaves > 0) {
-        report.context_stats.unique_contexts = total_contexts / total_quad_leaves;
-        if (total_contexts > 0) {
-            report.context_stats.avg_symbols_per_context = (double)total_symbols / total_contexts;
+    if (report.transform_eval_stats.decision_use_wavelet) {
+        report.transform_eval_stats.predicted_gain = max_res_corr * 0.5;
+    } else {
+        report.transform_eval_stats.predicted_gain = -0.5;
+    }
+    
+    report.transform_eval_stats.prediction_error = std::abs(report.transform_eval_stats.actual_wavelet_benefit - report.transform_eval_stats.predicted_gain);
+    }
+    
+    if (global_stats.total_zero_runs > 0) {
+        report.wavelet_stats.avg_zero_run = (double)global_stats.total_zero_run_length / global_stats.total_zero_runs;
+    }
+    report.wavelet_stats.max_zero_run = global_stats.w_stats.max_zero_run;
+    
+    if (global_stats.quad_leaves > 0) {
+        report.context_stats.unique_contexts = global_stats.total_contexts / global_stats.quad_leaves;
+        if (global_stats.total_contexts > 0) {
+            report.context_stats.avg_symbols_per_context = (double)global_stats.total_symbols / global_stats.total_contexts;
         }
         std::size_t min_c = std::numeric_limits<std::size_t>::max();
         std::size_t max_c = 0;
         std::vector<std::size_t> sizes;
-        sizes.reserve(global_context_sizes.size());
-        for (const auto& kv : global_context_sizes) {
+        sizes.reserve(global_stats.global_context_sizes.size());
+        for (const auto& kv : global_stats.global_context_sizes) {
             sizes.push_back(kv.second);
             min_c = std::min(min_c, kv.second);
             max_c = std::max(max_c, kv.second);
@@ -712,23 +642,9 @@ AnalysisReport analyze_terrain(const TerrainView& view, double scale, coding::Co
             report.context_stats.median_context_size = sizes[sizes.size() / 2];
         }
     }
-    
-    report.transform_eval_stats.actual_wavelet_benefit = report.quadtree_entropy - report.dwt_quadtree_entropy;
-    bool actual_benefit_positive = (report.transform_eval_stats.actual_wavelet_benefit > 0);
-    report.transform_eval_stats.prediction_correct = (report.transform_eval_stats.decision_use_wavelet == actual_benefit_positive);
-    
-    // If the heuristic says YES (correlation > 0.3), we predict a gain of ~0.5 bpp.
-    // If the heuristic says NO (correlation <= 0.3), we predict a penalty (gain of -0.5 bpp).
-    if (report.transform_eval_stats.decision_use_wavelet) {
-        report.transform_eval_stats.predicted_gain = 0.5;
-    } else {
-        report.transform_eval_stats.predicted_gain = -0.5;
-    }
-    
-    report.transform_eval_stats.prediction_error = std::abs(report.transform_eval_stats.actual_wavelet_benefit - report.transform_eval_stats.predicted_gain);
 
     report.spatial.delta_x_entropy = report.global_predictors.left_entropy;
-    report.spatial.delta_y_entropy = report.global_predictors.above_entropy;
+    report.spatial.delta_y_entropy = 0; // Above predictor is removed, so no delta y entropy is directly available
 
     return report;
 }

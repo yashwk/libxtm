@@ -27,10 +27,13 @@ int run_info(int argc, char** argv) {
         std::cout << "Flags: " << header.flags << "\n";
         std::cout << "Context Model: " << header.context_model << "\n";
         std::cout << "NoData Value: " << header.nodata_value << "\n";
-        std::cout << "EPSG CRS: " << header.epsg_crs << "\n";
-        std::cout << "Extent: [" << header.min_x << ", " << header.min_y << "] to [" << header.max_x << ", " << header.max_y << "]\n";
+        if (!header.wkt_projection.empty()) {
+            std::cout << "Projection: " << header.wkt_projection.substr(0, 100) << (header.wkt_projection.size() > 100 ? "..." : "") << "\n";
+        }
+        std::cout << "Origin: [" << header.transform.origin_x << ", " << header.transform.origin_y << "]\n";
         std::cout << "Grid: " << header.grid_width << "x" << header.grid_height << "\n";
-        std::cout << "Resolution: " << header.res_x << " x " << header.res_y << "\n";
+        std::cout << "Pixel Size: " << header.transform.pixel_width << " x " << header.transform.pixel_height << "\n";
+        std::cout << "Quantization Scale: " << header.scale << "\n";
         std::cout << "Index Offset: " << header.index_offset << "\n";
         
         const auto& index = reader.get_index();

@@ -1,6 +1,7 @@
 #include "xtm/container/IO.hpp"
 #include <stdexcept>
 #include <mutex>
+#include <algorithm>
 
 namespace xtm::container {
 
@@ -47,41 +48,60 @@ XtmWriter::~XtmWriter() {
     }
 }
 
-void XtmWriter::write_block(uint32_t x, uint32_t y, uint32_t width, uint32_t height, const std::vector<uint8_t>& bitstream) {
+void XtmWriter::write_block(uint32_t x, uint32_t y, uint32_t width, uint32_t height, const std::vector<uint8_t>& bitstream, uint64_t sequence_id) {
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (finalized_) throw std::runtime_error("Cannot write to finalized XTM file");
     
-    uint64_t offset = stream_.tellp();
-    stream_.write(reinterpret_cast<const char*>(bitstream.data()), bitstream.size());
-    
-    BlockIndexEntry entry;
-    entry.block_x = x;
-    entry.block_y = y;
-    entry.block_width = width;
-    entry.block_height = height;
-    entry.byte_offset = offset;
-    entry.byte_length = bitstream.size();
-    if (header_.version >= 3) {
-        entry.checksum = calculate_crc32(bitstream.data(), bitstream.size());
-    }
-    
-    index_.push_back(entry);
+    PendingBlock block;
+    block.x = x;
+    block.y = y;
+    block.width = width;
+    block.height = height;
+    block.bitstream = bitstream;
+    block.sequence_id = sequence_id;
+    pending_.push_back(std::move(block));
 }
 
 void XtmWriter::finalize() {
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (finalized_) return;
-    
+
+    // Deterministic byte layout: payloads are emitted in sequence_id order.
+    // This preserves the quadtree Z-order required for context prediction.
+    std::sort(pending_.begin(), pending_.end(), [](const PendingBlock& a, const PendingBlock& b) {
+        return a.sequence_id < b.sequence_id;
+    });
+
+    std::vector<BlockIndexEntry> index;
+    index.reserve(pending_.size());
+    for (const auto& block : pending_) {
+        uint64_t offset = stream_.tellp();
+        stream_.write(reinterpret_cast<const char*>(block.bitstream.data()), block.bitstream.size());
+
+        BlockIndexEntry entry;
+        entry.block_x = block.x;
+        entry.block_y = block.y;
+        entry.block_width = block.width;
+        entry.block_height = block.height;
+        entry.byte_offset = offset;
+        entry.byte_length = block.bitstream.size();
+        if (header_.version >= 3) {
+            entry.checksum = calculate_crc32(block.bitstream.data(), block.bitstream.size());
+        }
+        index.push_back(entry);
+    }
+    pending_.clear();
+
     // Record where the index starts
     uint64_t index_offset = stream_.tellp();
     header_.index_offset = index_offset;
     
     // Write number of entries
-    uint32_t num_entries = index_.size();
+    uint32_t num_entries = index.size();
     stream_.write(reinterpret_cast<const char*>(&num_entries), sizeof(num_entries));
     
     // Write all entries
-    for (const auto& entry : index_) {
+    for (const auto& entry : index) {
         entry.write(stream_);
     }
     
@@ -138,6 +158,12 @@ XtmReader::XtmReader(const std::string& filepath) {
 }
 
 std::vector<uint8_t> XtmReader::read_block(const BlockIndexEntry& entry) {
+    std::vector<uint8_t> data;
+    read_block(entry, data);
+    return data;
+}
+
+void XtmReader::read_block(const BlockIndexEntry& entry, std::vector<uint8_t>& out_buffer) {
     std::lock_guard<std::mutex> lock(read_mutex_);
     
     // Sanity-check the block region against the file size
@@ -148,21 +174,19 @@ std::vector<uint8_t> XtmReader::read_block(const BlockIndexEntry& entry) {
         throw std::runtime_error("Corrupt XTM: block region lies outside the file");
     }
     
-    std::vector<uint8_t> data(entry.byte_length);
+    out_buffer.resize(entry.byte_length);
     stream_.seekg(entry.byte_offset);
-    stream_.read(reinterpret_cast<char*>(data.data()), entry.byte_length);
+    stream_.read(reinterpret_cast<char*>(out_buffer.data()), entry.byte_length);
     if (!stream_) {
         throw std::runtime_error("Corrupt XTM: failed to read block bitstream");
     }
     
     if (header_.version >= 3) {
-        uint32_t computed = calculate_crc32(data.data(), data.size());
+        uint32_t computed = calculate_crc32(out_buffer.data(), out_buffer.size());
         if (computed != entry.checksum) {
             throw std::runtime_error("Corrupt XTM: block CRC32 mismatch");
         }
     }
-    
-    return data;
 }
 
 } // namespace xtm::container

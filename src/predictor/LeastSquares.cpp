@@ -1,5 +1,7 @@
 #include "xtm/predictor/Predictors.hpp"
 #include <cmath>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace xtm::predictor {
@@ -101,12 +103,13 @@ void LeastSquaresPredictor::encode(const partition::BlockView& block, Prediction
 }
 
 void LeastSquaresPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
-    int32_t qw1 = 256, qw2 = 256, qw3 = -256;
-    if (encoded.parameters.size() >= 3) {
-        qw1 = encoded.parameters[0];
-        qw2 = encoded.parameters[1];
-        qw3 = encoded.parameters[2];
+    if (encoded.parameters.size() < 3) {
+        throw std::runtime_error("Corrupt XTM: Least Squares predictor requires 3 parameters, got "
+                                 + std::to_string(encoded.parameters.size()));
     }
+    int32_t qw1 = encoded.parameters[0];
+    int32_t qw2 = encoded.parameters[1];
+    int32_t qw3 = encoded.parameters[2];
     
     size_t i = 0;
     for (uint32_t y = 0; y < block.height; ++y) {

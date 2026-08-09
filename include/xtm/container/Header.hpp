@@ -2,35 +2,34 @@
 #include <cstdint>
 #include <vector>
 #include <iostream>
+#include <string>
+#include "xtm/Terrain.hpp"
 
 namespace xtm::container {
 
 struct XtmHeader {
     char magic[4] = {'X', 'T', 'M', '\0'};
-    uint16_t version = 3; // v2 adds context_model, v3 adds block CRC32
+    uint16_t version = 4; // v4 adds WKT projection string and full 6-parameter GeoTransform
     uint16_t flags = 0;
     
-    static constexpr uint16_t FLAG_USE_WAVELET = 1 << 0;
     static constexpr uint16_t FLAG_HAS_NODATA = 1 << 1;
-    static constexpr uint16_t FLAG_WAVELET_FIRST = 1 << 2;
+    static constexpr uint16_t FLAG_DISABLE_QUADTREE = 1 << 3;
 
-    // Context model used by the arithmetic coder at encode time so the decoder
-    // can reproduce the exact same context set. 0 = Simple, 1 = Extended.
-    // Decoding with a mismatched model silently produces garbage.
+    static constexpr uint8_t PIPELINE_PREDICTOR = 0;
+    static constexpr uint8_t PIPELINE_WAVELET = 1;
+
+    uint8_t pipeline_id = PIPELINE_PREDICTOR;
     uint16_t context_model = 0;
     
-    float nodata_value = 0.0f;
+    double nodata_value = 0.0;
     
-    double min_x = 0.0;
-    double min_y = 0.0;
-    double max_x = 0.0;
-    double max_y = 0.0;
-    uint32_t epsg_crs = 0;
+    GeoTransform transform;
+    std::string wkt_projection;
     
     uint32_t grid_width = 0;
     uint32_t grid_height = 0;
-    double res_x = 0.0;
-    double res_y = 0.0;
+    
+    double scale = 1.0;
     
     uint64_t index_offset = 0;
     

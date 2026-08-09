@@ -29,16 +29,11 @@ struct SpatialDifferences {
 
 struct PredictorPerformance {
     double left_entropy;
-    double above_entropy;
-    double average_entropy;
     double gradient_entropy;
     double jpegls_entropy;
-    double plane_entropy;
-    double gap_entropy;
-    double adaptive_gradient_entropy;
-    double least_squares_entropy;
-    double second_order_entropy;
-    double local_slope_entropy;
+    double polynomial_entropy;
+    double gap_entropy = 0;
+    double least_squares_entropy = 0;
 };
 
 struct PredictorConfidence {
@@ -60,28 +55,37 @@ struct PredictionDifficulty {
 
 struct PredictorUsage {
     std::size_t left_count = 0;
-    std::size_t above_count = 0;
-    std::size_t average_count = 0;
     std::size_t gradient_count = 0;
     std::size_t jpegls_count = 0;
-    std::size_t plane_count = 0;
+    std::size_t polynomial_count = 0;
     std::size_t gap_count = 0;
-    std::size_t adaptive_gradient_count = 0;
     std::size_t least_squares_count = 0;
-    std::size_t second_order_count = 0;
-    std::size_t local_slope_count = 0;
     
     double left_mag_sum = 0;
-    double above_mag_sum = 0;
-    double average_mag_sum = 0;
     double gradient_mag_sum = 0;
     double jpegls_mag_sum = 0;
-    double plane_mag_sum = 0;
+    double polynomial_mag_sum = 0;
     double gap_mag_sum = 0;
-    double adaptive_gradient_mag_sum = 0;
     double least_squares_mag_sum = 0;
-    double second_order_mag_sum = 0;
-    double local_slope_mag_sum = 0;
+    
+    double left_final_bits = 0;
+    double gradient_final_bits = 0;
+    double jpegls_final_bits = 0;
+    double polynomial_final_bits = 0;
+    double gap_final_bits = 0;
+    double least_squares_final_bits = 0;
+    
+    std::size_t left_final_pixels = 0;
+    std::size_t gradient_final_pixels = 0;
+    std::size_t jpegls_final_pixels = 0;
+    std::size_t polynomial_final_pixels = 0;
+    std::size_t gap_final_pixels = 0;
+    std::size_t least_squares_final_pixels = 0;
+    
+    std::size_t second_order_pass_count = 0;
+    double second_order_bits_savings = 0.0;
+    double base_bits_total = 0.0;
+    double second_order_bits_savings_pct = 0.0;
 };
 
 struct QuadtreeStats {
@@ -89,8 +93,6 @@ struct QuadtreeStats {
     std::size_t size_256_count = 0;
     std::size_t size_128_count = 0;
     std::size_t size_64_count = 0;
-    std::size_t max_depth = 0;
-    double avg_depth = 0;
 };
 
 struct SubbandStats {
@@ -150,6 +152,11 @@ struct CorrelationStats {
 
 struct ResidualDistributionStats {
     double mean_abs = 0;
+    double bits_per_sample = 0;
+    bool use_wavelet = false;
+    uint32_t wavelet_levels = 0;
+    bool use_second_order = false;
+    
     double variance = 0;
     double zero_pct = 0;
     int32_t median = 0;
@@ -172,6 +179,10 @@ struct TimingStats {
     double quantization_ms = 0;
     double analyze_ms = 0;
     double total_ms = 0;
+};
+
+struct AnalyzerOptions {
+    bool enable_wavelet_analysis = false;
 };
 
 struct AnalysisReport {
@@ -204,6 +215,6 @@ struct AnalysisReport {
     TimingStats timing;
 };
 
-AnalysisReport analyze_terrain(const TerrainView& view, double scale = 1.0, coding::ContextModel model = coding::ContextModel::Extended);
+AnalysisReport analyze_terrain(const TerrainView& view, double scale = 1.0, coding::ContextModel model = coding::ContextModel::Extended, const AnalyzerOptions& options = AnalyzerOptions());
 
 } // namespace xtm::analyzer

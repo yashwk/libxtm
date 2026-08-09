@@ -14,6 +14,7 @@ public:
     uint32_t get_num_symbols() const { return static_cast<uint32_t>(freqs_.size()); }
     
     void increment(uint32_t symbol);
+    void reset();
     
 private:
     std::vector<uint32_t> freqs_;

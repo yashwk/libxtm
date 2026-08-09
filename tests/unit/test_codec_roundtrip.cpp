@@ -1,188 +1,99 @@
 #include <gtest/gtest.h>
 #include "xtm/terrain/Quantization.hpp"
-#include "xtm/partition/Block.hpp"
-#include "xtm/analyzer/Selector.hpp"
-#include "xtm/predictor/Predictors.hpp"
-#include "xtm/transform/Wavelet.hpp"
-#include "xtm/coding/RangeCoder.hpp"
-#include "xtm/coding/ContextModeler.hpp"
-#include "xtm/coding/ZigZag.hpp"
+#include "xtm/coding/Encoder.hpp"
+#include "xtm/coding/Decoder.hpp"
+#include "xtm/container/IO.hpp"
 #include <random>
 #include <cmath>
-#include <unordered_map>
+#include <fstream>
+#include <cstdio>
+#include <vector>
+#include <string>
+#include <filesystem>
 
 using namespace xtm;
 
 namespace {
 
-// Mirrors the per-block bitstream path of apps/xtm/EncodeCmd.cpp / DecodeCmd.cpp.
-// The selector already stores wavelet-transformed residuals when use_wavelet is set,
-// so this only runs symbol generation -> adaptive arithmetic coding -> decode.
-void roundtrip_block(const std::vector<int32_t>& residuals_in,
-                     bool use_wavelet, uint32_t levels,
-                     uint32_t w, uint32_t h,
-                     coding::ContextModel model,
-                     std::vector<int32_t>& residuals_out) {
-    std::vector<int32_t> data = residuals_in;
-    
-    coding::BitWriter bw;
-    coding::ArithmeticEncoder ac(bw);
-    std::unordered_map<coding::Context, coding::FrequencyTable> context_tables;
-    coding::FrequencyTable run_table(256);
-    coding::FrequencyTable uniform_bit(2);
-    
-    auto symbols = coding::generate_symbols(data, w, h, use_wavelet ? levels : 0, model);
-    for (const auto& sym : symbols) {
-        auto it = context_tables.find(sym.context);
-        if (it == context_tables.end()) {
-            it = context_tables.emplace(sym.context, coding::FrequencyTable(33)).first;
-        }
-        auto& freqs = it->second;
-        
-        ac.encode(freqs, sym.magnitude_class);
-        freqs.increment(sym.magnitude_class);
-        
-        if (sym.magnitude_class == 0) {
-            ac.encode(run_table, sym.run_length - 1);
-            run_table.increment(sym.run_length - 1);
-        } else if (sym.magnitude_class > 1) {
-            for (int i = sym.magnitude_class - 2; i >= 0; --i) {
-                ac.encode(uniform_bit, (sym.remainder >> i) & 1);
-            }
-        }
-    }
-    ac.flush();
-    bw.flush();
-    
-    coding::BitReader br(bw.get_buffer());
-    coding::ArithmeticDecoder ad(br);
-    
-    std::vector<std::pair<uint32_t, uint32_t>> coords_LL, coords_LH, coords_HL, coords_HH;
-    coding::extract_subbands(w, h, use_wavelet ? levels : 0, coords_LL, coords_LH, coords_HL, coords_HH);
-    
-    std::unordered_map<coding::Context, coding::FrequencyTable> dec_context_tables;
-    coding::FrequencyTable dec_run_table(256);
-    coding::FrequencyTable dec_uniform_bit(2);
-    
-    residuals_out.assign(w * h, 0);
-    
-    auto decode_subband = [&](const std::vector<std::pair<uint32_t, uint32_t>>& coords, uint8_t sb_idx) {
-        uint32_t decoded_count = 0;
-        while (decoded_count < coords.size()) {
-            coding::Context ctx;
-            ctx.subband = sb_idx;
-            ctx.neighbour_activity = 0;
-            if (model == coding::ContextModel::Extended && decoded_count > 0) {
-                uint32_t prev_x = coords[decoded_count - 1].first;
-                uint32_t prev_y = coords[decoded_count - 1].second;
-                if (std::abs(residuals_out[prev_y * w + prev_x]) > 2) {
-                    ctx.neighbour_activity = 1;
-                }
-            }
-            
-            auto it = dec_context_tables.find(ctx);
-            if (it == dec_context_tables.end()) {
-                it = dec_context_tables.emplace(ctx, coding::FrequencyTable(33)).first;
-            }
-            auto& freqs = it->second;
-            
-            uint32_t mag_class = ad.decode(freqs);
-            freqs.increment(mag_class);
-            
-            if (mag_class == 0) {
-                uint32_t run_len = ad.decode(dec_run_table) + 1;
-                dec_run_table.increment(run_len - 1);
-                decoded_count += run_len;
-            } else {
-                uint32_t remainder = 0;
-                if (mag_class > 1) {
-                    for (int i = mag_class - 2; i >= 0; --i) {
-                        remainder |= (ad.decode(dec_uniform_bit) << i);
-                    }
-                }
-                uint32_t zz = (1u << (mag_class - 1)) | remainder;
-                int32_t val = coding::zigzag_decode(zz);
-                uint32_t x = coords[decoded_count].first;
-                uint32_t y = coords[decoded_count].second;
-                residuals_out[y * w + x] = val;
-                decoded_count++;
-            }
-        }
-    };
-    
-    decode_subband(coords_LL, 0);
-    decode_subband(coords_LH, 1);
-    decode_subband(coords_HL, 2);
-    decode_subband(coords_HH, 3);
-    
-    if (use_wavelet && levels > 0) {
-        transform::CDF53Transform::inverse_2d(residuals_out, w, h, levels);
-    }
+std::vector<uint8_t> read_all_bytes(const std::string& path) {
+    std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+    if (!ifs.is_open()) return {};
+    std::streamsize size = ifs.tellg();
+    ifs.seekg(0, std::ios::beg);
+    std::vector<uint8_t> buffer(size);
+    if (ifs.read((char*)buffer.data(), size)) return buffer;
+    return {};
 }
 
-struct RoundTripResult {
-    int total_blocks = 0;
-    int wavelet_blocks = 0;
+class CodecRoundTripTest : public ::testing::Test {
+protected:
+    std::string temp_dir_;
+
+    void SetUp() override {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(10000, 99999);
+        temp_dir_ = std::filesystem::temp_directory_path() / ("xtm_test_roundtrip_" + std::to_string(dis(gen)));
+        std::filesystem::create_directory(temp_dir_);
+    }
+
+    void TearDown() override {
+        if (std::filesystem::exists(temp_dir_)) {
+            std::filesystem::remove_all(temp_dir_);
+        }
+    }
+
+    std::string get_temp_file(const std::string& name) {
+        return (std::filesystem::path(temp_dir_) / name).string();
+    }
+
+    coding::EncodeResult roundtrip_grid(terrain::IntGrid& grid, float scale, coding::ContextModel model, uint32_t threads = 0, analyzer::PipelineType pipeline = analyzer::PipelineType::Predictor) {
+        const testing::TestInfo* const test_info = testing::UnitTest::GetInstance()->current_test_info();
+        std::string test_name = test_info ? test_info->name() : "unknown";
+        std::string temp_path = get_temp_file(test_name + ".xtm");
+        
+        coding::Options options;
+        options.scale = scale;
+        options.context_model = model;
+        options.num_threads = threads;
+        options.pipeline_type = pipeline;
+        
+        container::XtmHeader header;
+        header.grid_width = grid.width;
+        header.grid_height = grid.height;
+        header.scale = options.scale;
+        header.context_model = static_cast<uint8_t>(options.context_model);
+        header.pipeline_id = (options.pipeline_type == analyzer::PipelineType::Wavelet) ? container::XtmHeader::PIPELINE_WAVELET : container::XtmHeader::PIPELINE_PREDICTOR;
+        
+        coding::EncodeResult res;
+        {
+            container::XtmWriter writer(temp_path, header);
+            res = coding::XtmEncoder::encode(grid, writer, options);
+        }
+        
+        terrain::IntGrid decoded;
+        decoded.width = grid.width;
+        decoded.height = grid.height;
+        decoded.data.resize(grid.width * grid.height, 0);
+        decoded.nodata_mask.resize(grid.width * grid.height, false);
+        {
+            container::XtmReader reader(temp_path);
+            coding::XtmDecoder::decode(reader, decoded, 0, 0, grid.width, grid.height, options.num_threads);
+        }
+        
+        EXPECT_EQ(decoded.width, grid.width);
+        EXPECT_EQ(decoded.height, grid.height);
+        for (size_t i = 0; i < grid.data.size(); ++i) {
+            EXPECT_EQ(decoded.data[i], grid.data[i]) << "Mismatch at index " << i;
+        }
+        
+        return res;
+    }
 };
-
-RoundTripResult roundtrip_grid(terrain::IntGrid& grid, coding::ContextModel model) {
-    predictor::PredictorBank bank;
-    std::vector<const predictor::Predictor*> predictors_list = bank.ordered();
-    analyzer::PredictorSelector selector(predictors_list, 10.0, analyzer::PipelineOrder::PredictorWavelet);
-    
-    terrain::IntGrid decoded;
-    decoded.width = grid.width;
-    decoded.height = grid.height;
-    decoded.data.assign(grid.data.size(), 0);
-    
-    const uint32_t block_size = 64;
-    RoundTripResult result;
-    
-    for (uint32_t by = 0; by < grid.height; by += block_size) {
-        for (uint32_t bx = 0; bx < grid.width; bx += block_size) {
-            partition::BlockView block;
-            block.grid = &grid;
-            block.x_offset = bx;
-            block.y_offset = by;
-            block.width = std::min(block_size, grid.width - bx);
-            block.height = std::min(block_size, grid.height - by);
-            
-            auto sel = selector.select(block);
-            if (sel.best_predictor == nullptr) {
-                ADD_FAILURE() << "No predictor selected for block (" << bx << ", " << by << ")";
-                return result;
-            }
-            result.total_blocks++;
-            if (sel.use_wavelet) result.wavelet_blocks++;
-            
-            std::vector<int32_t> residuals_out;
-            roundtrip_block(sel.best_encoded.residuals,
-                            sel.use_wavelet, sel.wavelet_levels,
-                            block.width, block.height, model, residuals_out);
-            
-            partition::MutableBlockView mblock;
-            mblock.grid = &decoded;
-            mblock.x_offset = bx;
-            mblock.y_offset = by;
-            mblock.width = block.width;
-            mblock.height = block.height;
-            
-            predictor::PredictionResult decoded_res;
-            decoded_res.residuals = std::move(residuals_out);
-            decoded_res.parameters = sel.best_encoded.parameters;
-            sel.best_predictor->decode(decoded_res, mblock);
-        }
-    }
-    
-    for (size_t i = 0; i < grid.data.size(); ++i) {
-        EXPECT_EQ(decoded.data[i], grid.data[i]) << "Mismatch at index " << i;
-    }
-    return result;
-}
 
 } // namespace
 
-TEST(CodecRoundTripTest, StructuredTerrainLossless) {
+TEST_F(CodecRoundTripTest, StructuredTerrainLossless) {
     const uint32_t W = 256, H = 256;
     std::vector<float> floats(W * H);
     for (uint32_t y = 0; y < H; ++y) {
@@ -201,57 +112,163 @@ TEST(CodecRoundTripTest, StructuredTerrainLossless) {
     std::copy(floats.begin(), floats.end(), buffer.data());
     auto grid = terrain::quantize(buffer.view(), 1.0);
     
-    auto result = roundtrip_grid(grid, coding::ContextModel::Extended);
+    auto result = roundtrip_grid(grid, 1.0f, coding::ContextModel::Extended);
     EXPECT_GT(result.total_blocks, 0);
-    // Correlated residuals mean the wavelet path must be exercised at least once
-    EXPECT_GT(result.wavelet_blocks, 0);
 }
 
-TEST(CodecRoundTripTest, RandomNoiseLossless) {
-    const uint32_t W = 128, H = 128;
-    terrain::IntGrid grid;
-    grid.width = W;
-    grid.height = H;
-    grid.data.resize(W * H);
-    
-    std::mt19937 rng(123);
-    std::uniform_int_distribution<int32_t> dist(-1000, 5000);
-    for (auto& v : grid.data) v = dist(rng);
-    
-    auto result = roundtrip_grid(grid, coding::ContextModel::Simple);
-    EXPECT_GT(result.total_blocks, 0);
-    // Pure noise has no residual structure; the wavelet path should be rarely chosen
-    EXPECT_LE(result.wavelet_blocks, result.total_blocks / 2);
-}
-
-TEST(CodecRoundTripTest, FlatGridLossless) {
-    const uint32_t W = 64, H = 64;
-    terrain::IntGrid grid;
-    grid.width = W;
-    grid.height = H;
-    grid.data.assign(W * H, 4242);
-    
-    auto result = roundtrip_grid(grid, coding::ContextModel::Extended);
-    EXPECT_GT(result.total_blocks, 0);
-    EXPECT_EQ(result.wavelet_blocks, 0);
-}
-
-TEST(CodecRoundTripTest, OddSizedBlocksLossless) {
-    // Non-power-of-two grid: exercises edge blocks that are not 64x64
-    const uint32_t W = 150, H = 97;
-    terrain::IntGrid grid;
-    grid.width = W;
-    grid.height = H;
-    grid.data.resize(W * H);
-    
-    std::mt19937 rng(55);
-    std::uniform_int_distribution<int32_t> dist(-500, 500);
+TEST_F(CodecRoundTripTest, StructuredTerrainWaveletLossless) {
+    const uint32_t W = 256, H = 256;
+    std::vector<float> floats(W * H);
     for (uint32_t y = 0; y < H; ++y) {
         for (uint32_t x = 0; x < W; ++x) {
-            grid.data[y * W + x] = dist(rng) + x / 2;
+            double v = 1000.0 + 0.5 * x + 0.3 * y
+                     + 25.0 * std::sin(x * 0.05) * std::cos(y * 0.04)
+                     + 10.0 * std::sin(x * 0.2 + y * 0.15)
+                     + 40.0 * std::sin(x * 0.6 + y * 0.4)
+                     + 15.0 * std::sin(x * 1.3) * std::cos(y * 1.1);
+            if (x < 64 && y < 64) v = 500.0; // flat plateau block
+            floats[y * W + x] = static_cast<float>(v);
         }
     }
     
-    auto result = roundtrip_grid(grid, coding::ContextModel::Extended);
+    TerrainBuffer buffer(W, H);
+    std::copy(floats.begin(), floats.end(), buffer.data());
+    auto grid = terrain::quantize(buffer.view(), 1.0);
+    
+    auto result = roundtrip_grid(grid, 1.0f, coding::ContextModel::Extended, 0, analyzer::PipelineType::Wavelet);
     EXPECT_GT(result.total_blocks, 0);
 }
+
+TEST_F(CodecRoundTripTest, RandomNoiseLossless) {
+    const uint32_t W = 128, H = 128;
+    terrain::IntGrid grid;
+    grid.width = W; grid.height = H; grid.data.resize(W*H);
+    grid.nodata_mask.resize(W*H, false);
+    
+    std::mt19937 rng(42);
+    std::uniform_int_distribution<int32_t> dist(-100, 100);
+    
+    for (auto& v : grid.data) v = dist(rng);
+    
+    auto result = roundtrip_grid(grid, 1.0f, coding::ContextModel::Extended);
+    EXPECT_GT(result.total_blocks, 0);
+}
+
+TEST_F(CodecRoundTripTest, FlatGridLossless) {
+    const uint32_t W = 128, H = 128;
+    terrain::IntGrid grid;
+    grid.width = W; grid.height = H; grid.data.resize(W*H, 42);
+    grid.nodata_mask.resize(W*H, false);
+    
+    auto result = roundtrip_grid(grid, 1.0f, coding::ContextModel::Extended);
+    EXPECT_GT(result.total_blocks, 0);
+}
+
+TEST_F(CodecRoundTripTest, OddSizedBlocksLossless) {
+    const uint32_t W = 127, H = 191; // non powers of 2
+    terrain::IntGrid grid;
+    grid.width = W; grid.height = H; grid.data.resize(W*H);
+    grid.nodata_mask.resize(W*H, false);
+    
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            grid.data[y * W + x] = x + y;
+        }
+    }
+    
+    auto result = roundtrip_grid(grid, 1.0f, coding::ContextModel::Extended);
+    EXPECT_GT(result.total_blocks, 0);
+}
+
+TEST_F(CodecRoundTripTest, ThreadDeterminism) {
+    const uint32_t W = 256, H = 256;
+    terrain::IntGrid grid; grid.width = W; grid.height = H; grid.data.resize(W*H);
+    std::mt19937 rng(1337); std::uniform_int_distribution<int32_t> dist(-1000, 1000);
+    for (auto& v : grid.data) v = dist(rng);
+    
+    coding::Options options; options.context_model = coding::ContextModel::Extended;
+    container::XtmHeader header; header.grid_width = W; header.grid_height = H; header.scale = 1.0f; header.context_model = 1;
+    
+    std::string path1 = get_temp_file("xtm_test_det1.xtm");
+    std::string path2 = get_temp_file("xtm_test_det2.xtm");
+    
+    options.num_threads = 1;
+    { container::XtmWriter writer(path1, header); coding::XtmEncoder::encode(grid, writer, options); }
+    options.num_threads = 4;
+    { container::XtmWriter writer(path2, header); coding::XtmEncoder::encode(grid, writer, options); }
+    
+    auto bytes1 = read_all_bytes(path1);
+    auto bytes2 = read_all_bytes(path2);
+    
+    EXPECT_GT(bytes1.size(), 0);
+    EXPECT_EQ(bytes1.size(), bytes2.size());
+    EXPECT_TRUE(bytes1 == bytes2);
+}
+
+TEST_F(CodecRoundTripTest, RoiCropMatchesFullDecode) {
+    const uint32_t W = 256, H = 256;
+    terrain::IntGrid grid;
+    grid.width = W; grid.height = H; grid.data.resize(W*H);
+    std::mt19937 rng(42); std::uniform_int_distribution<int32_t> dist(-500, 500);
+    for (auto& v : grid.data) v = dist(rng);
+    
+    std::string temp_path = get_temp_file("xtm_test_roi.xtm");
+    coding::Options options; options.context_model = coding::ContextModel::Extended;
+    container::XtmHeader header; header.grid_width = W; header.grid_height = H; header.scale = 1.0f; header.context_model = 1;
+    {
+        container::XtmWriter writer(temp_path, header);
+        coding::XtmEncoder::encode(grid, writer, options);
+    }
+    
+    terrain::IntGrid full_decoded;
+    full_decoded.width = W;
+    full_decoded.height = H;
+    full_decoded.data.resize(W * H, 0);
+    full_decoded.nodata_mask.resize(W * H, false);
+    {
+        container::XtmReader reader(temp_path);
+        coding::XtmDecoder::decode(reader, full_decoded, 0, 0, W, H, options.num_threads);
+    }
+    
+    terrain::IntGrid roi_decoded;
+    int rx = 64, ry = 64, rw = 128, rh = 128;
+    roi_decoded.width = rw;
+    roi_decoded.height = rh;
+    roi_decoded.data.resize(rw * rh, 0);
+    roi_decoded.nodata_mask.resize(rw * rh, false);
+    {
+        container::XtmReader reader(temp_path);
+        coding::XtmDecoder::decode(reader, roi_decoded, rx, ry, rw, rh, options.num_threads);
+    }
+    
+    EXPECT_EQ(roi_decoded.width, rw);
+    EXPECT_EQ(roi_decoded.height, rh);
+    for (int y = 0; y < rh; ++y) {
+        for (int x = 0; x < rw; ++x) {
+            EXPECT_EQ(roi_decoded.data[y * rw + x], full_decoded.data[(ry + y) * W + (rx + x)]);
+        }
+    }
+}
+
+TEST_F(CodecRoundTripTest, HighPrecisionSubMeterLossless) {
+    const uint32_t W = 128, H = 128;
+    std::vector<float> floats(W * H);
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            double v = 1000.0 + 0.5 * x + 0.3 * y;
+            // Add some precision noise
+            v += (x % 7) * 0.01 + (y % 5) * 0.03;
+            floats[y * W + x] = static_cast<float>(v);
+        }
+    }
+    
+    TerrainBuffer buffer(W, H);
+    std::copy(floats.begin(), floats.end(), buffer.data());
+    
+    // Scale = 0.01 triggers the split-precision pipeline
+    auto grid = terrain::quantize(buffer.view(), 0.01f);
+    
+    auto result = roundtrip_grid(grid, 0.01f, coding::ContextModel::Extended);
+    EXPECT_GT(result.total_blocks, 0);
+}
+

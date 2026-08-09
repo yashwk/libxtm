@@ -5,7 +5,7 @@
 
 namespace xtm::io {
 
-void write_gdal(const std::string& path, const TerrainView& view, int32_t epsg_crs) {
+void write_gdal(const std::string& path, const TerrainView& view) {
     GDALAllRegister();
     
     GDALDriver* driver = GetGDALDriverManager()->GetDriverByName("GTiff");
@@ -18,7 +18,7 @@ void write_gdal(const std::string& path, const TerrainView& view, int32_t epsg_c
     options = CSLSetNameValue(options, "PREDICTOR", "3"); // Floating point predictor
     options = CSLSetNameValue(options, "TILED", "YES");
     
-    GDALDataset* dataset = driver->Create(path.c_str(), view.width, view.height, 1, GDT_Float32, options);
+    GDALDataset* dataset = driver->Create(path.c_str(), view.width, view.height, 1, GDT_Float64, options);
     CSLDestroy(options);
     
     if (!dataset) {
@@ -28,20 +28,15 @@ void write_gdal(const std::string& path, const TerrainView& view, int32_t epsg_c
     double geotransform[6] = {
         view.transform.origin_x,
         view.transform.pixel_width,
-        0.0,
+        view.transform.rotation_x,
         view.transform.origin_y,
-        0.0,
+        view.transform.rotation_y,
         view.transform.pixel_height
     };
     dataset->SetGeoTransform(geotransform);
     
-    if (epsg_crs > 0) {
-        OGRSpatialReference srs;
-        srs.importFromEPSG(epsg_crs);
-        char* wkt = nullptr;
-        srs.exportToWkt(&wkt);
-        dataset->SetProjection(wkt);
-        CPLFree(wkt);
+    if (!view.wkt_projection.empty()) {
+        dataset->SetProjection(view.wkt_projection.c_str());
     }
     
     GDALRasterBand* band = dataset->GetRasterBand(1);
@@ -52,9 +47,9 @@ void write_gdal(const std::string& path, const TerrainView& view, int32_t epsg_c
     
     // Write data row by row
     for (uint32_t y = 0; y < view.height; ++y) {
-        const float* row_ptr = view.data + y * view.width;
+        const double* row_ptr = view.data + y * view.width;
         CPLErr err = band->RasterIO(GF_Write, 0, y, view.width, 1,
-                                    (void*)row_ptr, view.width, 1, GDT_Float32, 0, 0);
+                                    (void*)row_ptr, view.width, 1, GDT_Float64, 0, 0);
         if (err != CE_None) {
             GDALClose(dataset);
             throw std::runtime_error("GDAL: Failed to write raster data");

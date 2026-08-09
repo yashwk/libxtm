@@ -132,7 +132,7 @@ The existing source is already DEFLATE compressed with a floating-point predicto
 
 libxtm should eventually support:
 
-- Lossless terrain compression
+- Error-bounded near-lossless terrain compression
 - Error-bounded terrain compression
 - Configurable vertical precision
 - Adaptive terrain prediction
@@ -185,23 +185,14 @@ The residual stream is substantially easier to encode than the original elevatio
 
 ---
 
-## 6. Lossless vs Error-Bounded Compression
+## 6. Error-Bounded Compression
 
-libxtm should support both modes.
+libxtm is fundamentally an **error-bounded near-lossless codec**. It does not attempt to compress and reconstruct exact IEEE-754 floating-point bits, as sub-scale precision is considered irrelevant for typical terrain applications.
 
-### 6.1 Exact Lossless Mode
+### 6.1 Lossless Ingestion
+To ensure that precision is only intentionally discarded by the user, the codec relies on strict `Float64` ingestion. When reading a source dataset (e.g., via GDAL), data is loaded exactly into a `TerrainBuffer` (backed by `double`). This guarantees that whether the source is `Float64`, `Float32`, `Int32`, or `Int16`, no truncation occurs prior to the explicit quantization step.
 
-The goal is:
-
-$$\text{Decode}(\text{Encode}(Z)) = Z$$
-
-for every source sample.
-
-For Float32 input, exact mode means reconstructing the original Float32 values exactly according to the codec’s defined canonical representation. No quantization is permitted.
-
-Predictors, residual transforms, wavelets, entropy coding, and container operations must all be reversible.
-
-### 6.2 Error-Bounded Mode
+### 6.2 Error Bounds
 
 For many terrain applications, the numerical precision contained in Float32 is far beyond the actual useful precision of a ~30 m DEM.
 
@@ -479,18 +470,10 @@ $$X = P(X) + R$$
 
 ## 15. Predictor Candidates
 
-The initial predictor bank should remain small and measurable.
+The predictor bank is optimized for high-performance and compression efficiency.
 
 ### Left
 $$P(X) = C$$
-
-### Above
-$$P(X) = B$$
-
-### Average
-$$P(X) = \left\lfloor \frac{B + C}{2} \right\rfloor$$
-
-with deterministic integer rounding.
 
 ### Gradient
 $$P(X) = B + C - A$$
@@ -502,19 +485,22 @@ A nonlinear edge-aware predictor that avoids some gradient predictor failures ar
 
 $$P(X) = \begin{cases} \min(B, C) & \text{if } A \ge \max(B, C) \\ \max(B, C) & \text{if } A \le \min(B, C) \\ B + C - A & \text{otherwise} \end{cases}$$
 
-### Plane Predictor
-Approximate local terrain as:
+### Polynomial Predictor
+Approximate local terrain as a surface:
+$$z = c_1 + c_2 x + c_3 y + c_4 x^2 + c_5 xy + c_6 y^2 + \dots$$
 
-$$z = ax + by + c$$
+Dynamic order selection (1, 2, or 3) allows fitting everything from simple slopes to hills. Coefficients are evaluated using least-squares and passed encoded into the stream.
 
-and encode deviations from the plane.
+### Gap Predictor
+Approximates gaps between macro-features.
 
-### Higher-Order Predictors
-Potential later experiments include quadratic surfaces:
+### Least Squares Predictor
+Uses surrounding context to dynamically build a local least-squares linear predictor for localized gradients.
 
-$$z = ax^2 + by^2 + cxy + dx + ey + f$$
-
-These should only be retained if residual reduction exceeds parameter and computational cost.
+### Second-Order Residual Pass
+Instead of an independent second-order predictor, a universal second-order pass can be applied to the residuals produced by any primary predictor. It uses a gradient average of the residuals themselves:
+$$p = W/2 + N/2$$
+If this reduces entropy further, the encoder signals it via the highest bit (0x80) of the predictor ID byte.
 
 ---
 
@@ -634,7 +620,7 @@ The encoder chooses whichever produces the smallest total representation. Wavele
 After prediction and transforms, coefficient distributions may depend strongly on context.
 
 Possible context variables include:
-- Wavelet subband
+- Wavelet subband (LL, HL, LH, HH) or Precision Subband (for sub-meter split)
 - Transform level
 - Predictor type
 - Neighboring coefficient magnitudes
@@ -1025,7 +1011,7 @@ The high-level API should support standard encoding:
 #include <xtm/xtm.hpp>
 
 xtm::EncodeOptions options;
-options.mode = xtm::Mode::Lossless;
+options.scale = 0.01;
 options.backend = xtm::Backend::Auto;
 
 xtm::encode("terrain.tif", "terrain.xtm", options);
@@ -1065,8 +1051,7 @@ xtm benchmark terrain.tif
 ### Encoding Options
 
 ```bash
-xtm encode input.tif output.xtm --lossless
-xtm encode input.tif output.xtm --precision 0.1
+xtm encode input.tif output.xtm --scale 0.01
 xtm encode input.tif output.xtm --backend cpu
 xtm encode input.tif output.xtm --backend cuda
 xtm encode input.tif output.xtm --threads 16
@@ -1339,7 +1324,6 @@ COMPRESSION RESULTS SUMMARY
 ## 43. Precision Analysis
 
 The analyzer evaluates multiple vertical precisions:
-- Exact (lossless Float32)
 - 0.01 m
 - 0.10 m
 - 0.25 m
