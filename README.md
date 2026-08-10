@@ -31,7 +31,7 @@
 - `tests/`       CTest suite
 
 
-The encoder and the analyzer share one pipeline implementation — `run_pipeline` (`src/coding/Pipeline.cpp`) owns superblock slicing, quadtree partitioning, and predictor selection for both. See `docs/pipeline.md` for the full technical reference.
+The encoder and the analyzer share one pipeline implementation — `for_each_superblock` (`src/coding/Pipeline.cpp`) owns superblock slicing, quadtree partitioning, and predictor selection for both, on top of the generic `parallel_for_superblocks` worker pool. See `docs/pipeline.md` for the full technical reference.
 
 ## Requirements
 

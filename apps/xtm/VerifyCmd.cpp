@@ -70,21 +70,19 @@ int run_verify(int argc, char** argv) {
         reader.get_index();
         coding::XtmDecoder::decode(reader, roi_grid, 0, 0, rw, rh, 0);
         
-        std::cout << "Reading original " << tif_file << "...\n";
-        auto orig = io::read_gdal(tif_file);
+        std::cout << "Reading and quantizing original " << tif_file << "...\n";
+        io::RasterInfo orig_info;
+        auto orig_grid = io::read_gdal_quantized(tif_file, header.precision, orig_info);
 
-        if (orig.width() != roi_grid.width || orig.height() != roi_grid.height) {
+        if (orig_info.width != roi_grid.width || orig_info.height != roi_grid.height) {
             std::cerr << "Verification failed: Dimension mismatch (" 
-                      << orig.width() << "x" << orig.height() << " vs "
+                      << orig_info.width << "x" << orig_info.height << " vs "
                       << roi_grid.width << "x" << roi_grid.height << ")\n";
             return 1;
         }
 
-        std::cout << "Quantizing original for exact integer comparison...\n";
-        auto orig_grid = terrain::quantize(orig.view(), header.scale);
-
         size_t mismatches = 0;
-        size_t total = orig.width() * orig.height();
+        size_t total = static_cast<size_t>(orig_info.width) * orig_info.height;
         
         for (size_t i = 0; i < total; ++i) {
             bool o_nodata = orig_grid.nodata_mask[i];

@@ -12,21 +12,21 @@ class MockPredictor : public Predictor {
 public:
     PredictorId id() const override { return PredictorId::Left; }
     const char* name() const override { return "Mock"; }
-    void encode(const BlockView& block, PredictionResult& res) const override {
-        res.residuals.resize(block.width * block.height);
+    void encode(const BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& /*parameters*/) const override {
+        residuals.resize(block.width * block.height);
         if (block.width == 64) {
             // Force high entropy for 64x64 so it splits
             for (uint32_t i = 0; i < block.width * block.height; ++i) {
-                res.residuals[i] = (i % 256) - 128; // high enough variance to cost > 1 bit/px
+                residuals[i] = (i % 256) - 128; // high enough variance to cost > 1 bit/px
             }
         } else {
             // Force 0 entropy for 32x32 so it prefers the split
             for (uint32_t i = 0; i < block.width * block.height; ++i) {
-                res.residuals[i] = 0;
+                residuals[i] = 0;
             }
         }
     }
-    void decode(const PredictionResult& /*res*/, MutableBlockView& /*block*/) const override {}
+    void decode(const std::vector<int32_t>& /*residuals*/, const std::vector<int32_t>& /*parameters*/, MutableBlockView& /*block*/) const override {}
 };
 
 TEST(QuadtreeTest, ZOrderTraversal) {
@@ -38,7 +38,7 @@ TEST(QuadtreeTest, ZOrderTraversal) {
     MockPredictor mock_pred;
     std::vector<const Predictor*> preds = { &mock_pred };
     // Context model Simple to evaluate entropy
-    PredictorSelector selector(preds, PipelineType::Predictor, 1, xtm::coding::ContextModel::Simple);
+    PredictorSelector selector(preds, xtm::coding::PipelineContext(1.0, xtm::coding::ContextModel::Simple, PipelineType::Predictor));
     
     double total_bits = 0;
     std::vector<QuadtreeNode> nodes;

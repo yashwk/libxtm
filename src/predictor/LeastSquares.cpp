@@ -13,10 +13,10 @@ static double det3(double m[3][3]) {
          + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 }
 
-void LeastSquaresPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
-    result.residuals.clear();
-    result.parameters.clear();
-    result.residuals.reserve(block.width * block.height);
+void LeastSquaresPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
+    residuals.clear();
+    parameters.clear();
+    residuals.reserve(block.width * block.height);
     
     // We will fit weights w1, w2, w3 for W, N, NW
     // P = w1*W + w2*N + w3*NW
@@ -72,7 +72,7 @@ void LeastSquaresPredictor::encode(const partition::BlockView& block, Prediction
     int32_t qw2 = static_cast<int32_t>(std::round(w2 * 256.0));
     int32_t qw3 = static_cast<int32_t>(std::round(w3 * 256.0));
     
-    result.parameters = {qw1, qw2, qw3};
+    parameters = {qw1, qw2, qw3};
     
     for (uint32_t y = 0; y < block.height; ++y) {
         const int32_t* row = block.row_data(y);
@@ -95,28 +95,28 @@ void LeastSquaresPredictor::encode(const partition::BlockView& block, Prediction
                 p = (qw1 * W + qw2 * N + qw3 * NW) / 256;
             }
             
-            result.residuals.push_back(val - p);
+            residuals.push_back(val - p);
         }
     }
     
     return;
 }
 
-void LeastSquaresPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
-    if (encoded.parameters.size() < 3) {
+void LeastSquaresPredictor::decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& parameters, partition::MutableBlockView& block) const {
+    if (parameters.size() < 3) {
         throw std::runtime_error("Corrupt XTM: Least Squares predictor requires 3 parameters, got "
-                                 + std::to_string(encoded.parameters.size()));
+                                 + std::to_string(parameters.size()));
     }
-    int32_t qw1 = encoded.parameters[0];
-    int32_t qw2 = encoded.parameters[1];
-    int32_t qw3 = encoded.parameters[2];
+    int32_t qw1 = parameters[0];
+    int32_t qw2 = parameters[1];
+    int32_t qw3 = parameters[2];
     
     size_t i = 0;
     for (uint32_t y = 0; y < block.height; ++y) {
         int32_t* row = block.row_data(y);
         const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
         for (uint32_t x = 0; x < block.width; ++x) {
-            int32_t res = encoded.residuals[i++];
+            int32_t res = residuals[i++];
             int32_t p = 0;
             
             if (x == 0 && y == 0) {

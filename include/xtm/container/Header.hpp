@@ -29,7 +29,7 @@ struct XtmHeader {
     uint32_t grid_width = 0;
     uint32_t grid_height = 0;
     
-    double scale = 1.0;
+    double precision = 1.0;
     
     uint64_t index_offset = 0;
     

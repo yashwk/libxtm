@@ -25,10 +25,10 @@ inline int32_t gap_predict(int32_t W, int32_t N, int32_t NW, int32_t NE,
 }
 } // namespace
 
-void GapPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
-    result.residuals.clear();
-    result.parameters.clear();
-    result.residuals.reserve(block.width * block.height);
+void GapPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
+    residuals.clear();
+    parameters.clear();
+    residuals.reserve(block.width * block.height);
 
     for (uint32_t y = 0; y < block.height; ++y) {
         const int32_t* row = block.row_data(y);
@@ -57,13 +57,13 @@ void GapPredictor::encode(const partition::BlockView& block, PredictionResult& r
                 p = gap_predict(W, N, NW, NE, WW, NN, NNE);
             }
 
-            result.residuals.push_back(val - p);
+            residuals.push_back(val - p);
         }
     }
     return;
 }
 
-void GapPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
+void GapPredictor::decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& /*parameters*/, partition::MutableBlockView& block) const {
     size_t i = 0;
     for (uint32_t y = 0; y < block.height; ++y) {
         int32_t* row = block.row_data(y);
@@ -91,7 +91,7 @@ void GapPredictor::decode(const PredictionResult& encoded, partition::MutableBlo
                 p = gap_predict(W, N, NW, NE, WW, NN, NNE);
             }
 
-            row[x] = encoded.residuals[i++] + p;
+            row[x] = residuals[i++] + p;
         }
     }
 }

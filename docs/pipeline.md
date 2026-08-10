@@ -67,13 +67,14 @@ flowchart TB
 | `predictor` | `Predictors.hpp`, `src/predictor/*.cpp` | 6 deterministic predictors, encode/decode pairs |
 | `analyzer` | `Selector.cpp`, `Analyzer.cpp`, `Statistics.cpp` | Per-block predictor selection + full diagnostic report |
 | `transform` | `Wavelet.cpp` | Reversible integer CDF 5/3 lifting wavelet (2D, up to 3 levels) |
-| `pipeline` | `Pipeline.cpp` | Shared 512×512 superblock worker pool (`run_pipeline`) |
+| `pipeline` | `Pipeline.cpp` | Shared 512×512 superblock worker pool (`parallel_for_superblocks`) + shared partition loop (`for_each_superblock`) |
 | `coding` | `RangeCoder.cpp`, `ContextModeler.cpp`, `BitStream.hpp`, `ZigZag.hpp` | Symbol modeling + adaptive arithmetic coding |
 | `container` | `Header.cpp`, `IO.cpp` | Binary `.xtm` format, block index, CRC32 |
 
 The core orchestration is split into two layers:
 
-- **`coding::run_pipeline` (`src/coding/Pipeline.cpp`)** owns the 512×512 superblock slicing, the parallel worker pool, and the quadtree/fixed-block partitioning with predictor selection. **Both** the encoder (`src/coding/Encoder.cpp`) and the analyzer (`src/analyzer/Analyzer.cpp`) are thin callbacks over this single shared implementation.
+- **`coding::parallel_for_superblocks` (`src/coding/Pipeline.cpp`)** owns the 512×512 superblock slicing and the parallel worker pool. **All** of the encoder (`src/coding/Encoder.cpp`), decoder (`src/coding/Decoder.cpp`), and analyzer (`src/analyzer/Analyzer.cpp`) share this single parallel skeleton by providing their own worker callbacks.
+- **`coding::for_each_superblock` (`src/coding/Pipeline.cpp`)** layers the shared extraction + quadtree partition + predictor selection on top of the skeleton: it copies the given `PredictorSelector` per worker, slices each superblock out of the grid, partitions it (quadtree or fixed 64×64), and invokes the handler. The **encoder** and the **analyzer** both drive this single implementation; their handlers only add the encode-payload/statistics logic.
 - **`XtmEncoder` / `XtmDecoder`** (`src/coding/Encoder.cpp`, `Decoder.cpp`) perform the actual bitstream coding on the partitioned blocks.
 
 The CLI (`apps/xtm/`, commands `encode`/`decode`/`analyze`/`info`/`verify`) merely wraps these library-level classes for file/GDAL orchestration.
@@ -88,20 +89,20 @@ flowchart TB
 
     subgraph S0["STAGE 0 — GDAL ingest"]
         direction LR
-        S0a["io::read_gdal()"] --> S0b["TerrainBuffer {double*, w, h, transform, nodata, wkt}"]
+        S0a["io::read_gdal_quantized()"] --> S0b["windowed 256-row reads, quantized in place"]
+        S0b --> S0c["IntGrid {int32*, nodata_mask, w, h}"]
     end
     S0 --> S1
 
-    subgraph S1["STAGE 1 — Quantization"]
+    subgraph S1["STAGE 1 — NoData inpainting"]
         direction LR
-        S1a["terrain::quantize(view, scale)"] --> S1b["IntGrid {int32*, nodata_mask, w, h}"]
-        S1b --> S1c["NoData 4-neighbor iterative inpainting"]
+        S1a["terrain::inpaint(grid)"] --> S1b["4-neighbor ring BFS (O(N), no full-grid copies)"]
     end
     S1 --> S2
 
     subgraph S2["STAGE 2 — Superblock extraction"]
         direction LR
-        S2a["run_pipeline: grid split into 512×512 IntGrids (truncated edges)"]
+        S2a["parallel_for_superblocks: grid split into 512×512 IntGrids (truncated edges)"]
     end
     S2 --> S3
 
@@ -116,7 +117,7 @@ flowchart TB
         direction LR
         S4a["analyzer::PredictorSelector::select()"] --> S4b["cost = 8 + params·32 + estimate_shannon_bits(residuals)"]
         S4b --> S4c["second-order pass (residual-of-residual, +16 bit flag)"]
-        S4c --> S4d["split-precision planes when scale < 1.0"]
+        S4c --> S4d["split-precision planes when precision < 1.0"]
     end
     S4 --> S5
 
@@ -134,12 +135,12 @@ flowchart TB
 
     subgraph S7["STAGE 7 — Container serialization"]
         direction LR
-        S7a["container::XtmWriter::write_block()"] --> S7b["buffered per-block bitstreams, index + header patched at finalize()"]
+        S7a["container::XtmWriter::write_superblock()"] --> S7b["flushed sequentially to disk, index + header patched at finalize()"]
     end
     S7 --> OUT["output.xtm"]
 ```
 
-The stages run **per 512×512 superblock in parallel** (one worker thread per core, `run_pipeline`); stages 3–7 run per quadtree leaf block within a superblock.
+The stages run **per 512×512 superblock in parallel** (one worker thread per core, `parallel_for_superblocks`); stages 3–7 run per quadtree leaf block within a superblock.
 
 ---
 
@@ -148,26 +149,26 @@ The stages run **per 512×512 superblock in parallel** (one worker thread per co
 ### Stage 0 — GDAL Ingest (`src/io/GDALReader.cpp`)
 
 - Opens the dataset with `GDALOpen(path, GA_ReadOnly)`, reads **band 1 only**, always as `GDT_Float64` via `RasterIO` to prevent any truncation.
-- Copies the complete 6-element GDAL affine geotransform into `GeoTransform {origin_x, pixel_width, rotation_x, origin_y, rotation_y, pixel_height}`, fully supporting rotated/sheared rasters.
+- Copies the complete 6-element GDAL affine geotransform into `GeoTransform {origin_x, pixel_width, rotation_x, origin_y, rotation_y, pixel_height}`, fully supporting rotated/sheared rasters. When the raster has no geotransform tag (`GetGeoTransform` fails), the `GeoTransform` default member initializers keep the identity `{0, 1, 0, 0, 0, 1}`, so no uninitialized bytes ever reach the `.xtm` header.
 - Captures `NoDataValue` (if present) as `std::optional<double>`.
 - Reads the precise projection/CRS via `GetProjectionRef()` and stores the raw WKT string into `wkt_projection`.
 
 ### Stage 1 — Quantization (`src/terrain/Quantization.cpp`)
 
 ```cpp
-grid.data[idx] = int32(std::round(val * (1.0 / scale)));
+grid.data[idx] = int32(std::round(val * (1.0 / precision)));
 ```
 
 - All downstream stages operate on `IntGrid {std::vector<int32_t> data, std::vector<uint8_t> nodata_mask, w, h}`.
-- NoData pixels are zeroed in `data` and flagged in `nodata_mask`, then filled by an **iterative 4-neighbor average inpainting** loop (multi-pass diffusion; each pass fills pixels adjacent to already-filled ones). The inpainting exists so predictors never see cliffs; the original mask is serialized per block instead.
-- The reconstruction bound is `|z − ẑ| ≤ scale/2`. There is **no true Float32-lossless mode**; `--scale 1.0` is meter precision, not bit-exact.
+- NoData pixels are zeroed in `data` and flagged in `nodata_mask`, then filled by a **ring-BFS 4-neighbor average inpainting** (`terrain::inpaint`): cells are processed by distance ring from the filled boundary, so each cell is visited exactly once (O(N) total, no full-grid copies per pass) with identical values to the former iterative diffusion. The inpainting exists so predictors never see cliffs; the original mask is serialized per block instead.
+- The reconstruction bound is `|z − ẑ| ≤ precision/2`. There is **no true Float32-lossless mode**; `--precision 1.0` is meter precision, not bit-exact.
 
 ### Stage 2 — Superblock Extraction (`src/coding/Pipeline.cpp`)
 
-- The global grid is tiled into 512×512 superblocks via `coding::run_pipeline(grid, options, selector, callback)`.
+- The global grid is tiled into 512×512 superblocks via `coding::parallel_for_superblocks`.
 - **Truncated Boundary Blocks:** Edge blocks are dynamically truncated to exactly fit the grid bounds without any padding (e.g. a grid of width 3600 will produce a final edge superblock of exactly 16×512). This preserves compression efficiency by avoiding padded "junk" pixels.
 - Superblocks are the **independence unit**: predictors never read across a superblock boundary, which is what enables ROI decoding.
-- A worker pool consumes superblock indices via `std::atomic<uint32_t> next_superblock_idx` (dynamic task stealing). Each worker owns its **copy** of the `PredictorSelector` (so its mutable scratch buffers are thread-local), its own 512×512 `sgrid` buffer, and a reusable leaf vector; the callback is invoked once per superblock with `(sgrid, sx, sy, leaves, quad_bits)`.
+- A worker pool consumes superblock indices via `std::atomic<uint32_t> next_idx` (dynamic task stealing). Each worker callback creates its own thread-local state (e.g. `sgrid` buffer, `PredictorSelector` copy, leaf vector) and iterates through superblocks provided by a `SuperblockIterator`.
 
 ### Stage 3 — Quadtree Partitioning (`src/partition/Quadtree.cpp`)
 
@@ -215,7 +216,7 @@ C(P) = C_id     + C_params        + C_residual
 
 ```mermaid
 flowchart LR
-    B["BlockView"] --> SP{"scale < 1.0 ?"}
+    B["BlockView"] --> SP{"precision < 1.0 ?"}
     SP -- yes --> SPLIT["split into meter (z/mult) + precision (z%mult) planes"]
     SPLIT --> CL
     SP -- no --> CL["quick terrain classification (min/max delta)"]
@@ -239,9 +240,9 @@ flowchart LR
 **Pipelines** (selected by `--pipeline`, stored in the header as `pipeline_id`):
 
 - **`predictor` (default, `PIPELINE_PREDICTOR`)**: predictors run on raw elevations; the winner's residuals are serialized (see Stage 7 for the per-block header fields).
-- **`wavelet` (`PIPELINE_WAVELET`)**: the CDF 5/3 forward transform is applied to the **whole block's elevations** first, then the transformed coefficients are serialized directly (no predictor IDs, no per-block DWT switch — the decoder recomputes `max_levels` from block dimensions via `coding::max_wavelet_levels`, max 3). This is the experimental legacy path; **it is only valid with `--scale >= 1.0`** (combining `--pipeline wavelet` with sub-meter scale is unsupported).
+- **`wavelet` (`PIPELINE_WAVELET`)**: the CDF 5/3 forward transform is applied to the **whole block's elevations** first, then the transformed coefficients are serialized directly (no predictor IDs, no per-block DWT switch — the decoder recomputes `max_levels` from block dimensions via `coding::max_wavelet_levels`, max 3). This is the experimental legacy path; **it is only valid with `--precision >= 1.0`** (combining `--pipeline wavelet` with sub-meter precision is unsupported).
 
-**Split-precision** (only when `scale < 1.0`, within either pipeline): the block is split into a meter plane (`z / multiplier`) and a precision plane (`z % multiplier`). The meter plane is predicted by the winner of the full candidate pool; the precision plane is predicted independently by the best of `{Left, Gradient, Gap}`. A `0xFF` precision-predictor ID marks "no precision plane" for that block.
+**Split-precision** (only when `precision < 1.0`, within either pipeline): the block is split into a meter plane (`z / multiplier`) and a precision plane (`z % multiplier`). The meter plane is predicted by the winner of the full candidate pool; the precision plane is predicted independently by the best of `{Left, Gradient, Gap}`. A `0xFF` precision-predictor ID marks "no precision plane" for that block.
 
 **Second-order residual pass**: after the winning predictor, a residual-of-residual correction (prediction `p = W/2 + N/2` over the residual plane) is evaluated and accepted if its estimated cost plus the 16-bit flag penalty beats the plain residuals. When accepted, bit 7 of the serialized predictor ID (`0x80`) signals the decoder to reverse the pass.
 
@@ -260,7 +261,7 @@ flowchart LR
     CTX --> SYM["encode_stream() -> ArithmeticEncoder"]
 ```
 
-1. **Context Streams** — The block is entirely encoded sequentially, one symbol at a time; no per-block symbol vectors are materialized. When split-precision applies (`has_precision`), the stream multiplexes `ContextStream::Meter` then `ContextStream::Precision` as two sequential flat streams within the single arithmetic-coded bitstream (the residual vector is `[meter (N samples), precision (N samples)]`).
+1. **Context Streams** — The block is entirely encoded sequentially, one symbol at a time; no per-block symbol vectors are materialized. When split-precision applies (`ctx.has_precision`), the stream multiplexes `ContextStream::Meter` then `ContextStream::Precision` as two sequential flat streams within the single arithmetic-coded bitstream (the residual vector is `[meter (N samples), precision (N samples)]`).
 2. **ZigZag** — signed int32 → unsigned (`0, −1, +1, −2, +2… → 0, 1, 2, 3, 4…`) via `zigzag_encode`.
 3. **Zero runs** — within each stream, consecutive zeros collapse into one `{magnitude_class = 0, run_length}` symbol, capped at 255 per symbol.
 4. **Magnitude classes** — a nonzero zigzag value `v` becomes `{magnitude_class = M, remainder}` where `M = ⌊log₂ v⌋ + 1` (0..32) and `remainder = v & ((1 << (M−1)) − 1)`.
@@ -293,7 +294,7 @@ flowchart LR
 | Field | Bits | Notes |
 |---|---|---|
 | predictor ID | 8 | `PredictorId` enum value; bit 7 (`0x80`) = second-order pass flag (predictor pipeline only) |
-| precision predictor ID | 8 | only when `scale < 1.0`; `0xFF` = no split-precision |
+| precision predictor ID | 8 | only when `precision < 1.0`; `0xFF` = no split-precision |
 | parameter count | 8 | |
 | parameters | 32 each | fixed-point int32 params (Polynomial / LeastSquares) |
 | block has nodata | 1 | |
@@ -308,9 +309,9 @@ The `wavelet` pipeline omits the predictor fields entirely: the block payload is
 block-beta
     columns 1
     block:Header["XtmHeader — variable size (v4)"]
-        H1["magic(4) version(2) flags(2) pipeline_id(1) transform(48) wkt_len(4) wkt(N) dims(8) scale(8) context(2) offset(8) [nodata(8)]"]
+        H1["magic(4) version(2) flags(2) pipeline_id(1) transform(48) wkt_len(4) wkt(N) dims(8) precision(8) context(2) offset(8) [nodata(8)]"]
     end
-    block:Payloads["Block payloads — appended in sequence_id order at finalize()"]
+    block:Payloads["Block payloads — appended sequentially as superblocks arrive"]
         P0["block bitstream 0"]
         P1["block bitstream 1"]
         P2["…"]
@@ -337,9 +338,9 @@ block-beta
 └────────────────────────────────────────────┘
 ```
 
-- **Deterministic ordering:** `XtmWriter::write_block` buffers each block's bitstream in memory (`pending_`), and `finalize()` sorts by `sequence_id` (superblock index · leaf index) before writing — the quadtree Z-order required for decoding, independent of worker scheduling. Note the trade-off: the **entire compressed file is buffered in RAM** until `finalize()`.
+- **Deterministic ordering:** `XtmWriter::write_superblock` accepts completed superblocks from worker threads and immediately streams them to disk if they match the next expected `sequence_id` (`expected_s_idx_`). This guarantees the quadtree Z-order required for decoding, independent of worker scheduling, while bounding the writer's memory overhead strictly to `O(num_threads * superblock_size)` rather than `O(file_size)`.
 - **CRC32:** each payload is checksummed (v3+ format) and verified on read.
-- **Header:** `magic "XTM\0"`, `version` (must be exactly 4), `flags`, `pipeline_id`, full 6-parameter `transform` (48 B), length-prefixed `wkt_projection`, `grid_width/height`, `scale` (double), `context_model` (0=Simple, 1=Extended), `index_offset`, and `nodata_value` (only when `FLAG_HAS_NODATA`).
+- **Header:** `magic "XTM\0"`, `version` (must be exactly 4), `flags`, `pipeline_id`, full 6-parameter `transform` (48 B), length-prefixed `wkt_projection`, `grid_width/height`, `precision` (double), `context_model` (0=Simple, 1=Extended), `index_offset`, and `nodata_value` (only when `FLAG_HAS_NODATA`).
 
 | Flag | Value | Meaning |
 |---|---|---|
@@ -366,46 +367,39 @@ flowchart TB
         W3["read bitstream → CRC32 check + bounds check"]
         W4["BitReader: predictor ID (validated) · second-order bit · precision predictor ID · params · nodata RLE"]
         W5["ArithmeticDecoder: per-context magnitude classes + run lengths + remainder bits<br/>(max_levels recomputed via coding::max_wavelet_levels)"]
-        W6["second-order reversal if flagged → predictor->decode into superblock grid<br/>(SplitPrecisionWrapper when a precision predictor is present)"]
+        W6["second-order reversal if flagged → predictor->decode into superblock grid<br/>(Split precision planes decoded inline when precision predictor is present)"]
         W1 --> W2 --> W3 --> W4 --> W5 --> W6
     end
 
     WORK --> SB --> MERGE["copy superblock pixels intersecting ROI into roi_grid"]
-    MERGE --> DQ["dequantize (int × scale, re-apply nodata_value)"]
+    MERGE --> DQ["dequantize (int / multiplier, re-apply nodata_value)"]
     DQ --> OUT["write GeoTIFF (DEFLATE · PREDICTOR=3 · TILED, row by row)"]
 ```
 
 Key properties:
 
 - **ROI decoding:** only superblocks intersecting `[rx, rx+rw) × [ry, ry+rh)` are touched; per-superblock work is identical to a full decode. The `--region` flag is the only geometry-adaptive part. The output geotransform origin is shifted by the ROI offset (`origin_x += rx·pixel_width + ry·rotation_x`, `origin_y += rx·rotation_y + ry·pixel_height`) so the cropped TIFF is georeferenced correctly.
-- **Determinism:** the decoder is fully deterministic given the file — it never depends on encode thread scheduling because the index supplies (x, y, w, h) and byte offsets, and payloads are laid out in Z-order at finalize.
+- **Determinism:** the decoder is fully deterministic given the file — it never depends on encode thread scheduling because the index supplies (x, y, w, h) and byte offsets, and payloads are laid out in Z-order by the `XtmWriter`. Encode is byte-reproducible across runs as well: every header field is deterministically initialized (the geotransform falls back to identity defaults), so two encodes of the same raster with the same settings produce identical `.xtm` files.
 - **Silent-corruption guards:** header magic/version/context-model checks, index-region and block-region bounds checks, per-block CRC32, predictor-id validation, and a bitstream underflow check on decode (excess bits past end-of-stream).
-- **Pipelines:** everything is read back from the header — `context_model`, `scale` (→ split-precision), `pipeline_id` (predictor vs wavelet). The caller supplies only the ROI and thread count; there is no CLI knob to override the recorded model, since a mismatched model silently decodes to garbage.
+- **Pipelines:** everything is read back from the header — `context_model`, `precision` (→ split-precision), `pipeline_id` (predictor vs wavelet). The caller supplies only the ROI and thread count; there is no CLI knob to override the recorded model, since a mismatched model silently decodes to garbage.
 
 ---
 
 ## 5. The Analyzer Pipeline (`src/analyzer/Analyzer.cpp`)
 
-`xtm analyze` runs the **same pipeline code as the encoder** — `analyze_terrain(view, scale, model, options)` drives `coding::run_pipeline` with the same `QuadtreePartitioner` and `PredictorSelector` — and instruments it per superblock through the callback. The reported entropy figures come from the same `estimate_shannon_bits` model used for selection, plus independent histogram entropies (`calculate_entropy`) for the per-predictor displays.
+`xtm analyze` runs the **same pipeline code as the encoder** — `analyze_terrain(grid, raw, ctx, options)` drives `coding::for_each_superblock` with the same `QuadtreePartitioner` and `PredictorSelector` — and instruments it per superblock through the callback. All reported figures come from the same `estimate_shannon_bits` model the selection uses (now exported with per-component output), so the report's estimate mirrors the encoder's own cost accounting.
 
-Report sections printed by `xtm analyze` (with `--wavelet` enabling the wavelet instrumentation):
+The report is a **decision report** — each section answers one practical question:
 
-1. **Dataset Overview** — dimensions, elevation min/max/mean/stddev, unique values, Shannon entropy (Float64, NoData-excluded).
-2. **Spatial & Correlation Stats** — Pearson horizontal/vertical/diagonal correlation of the raw quantized grid and of Gradient residuals.
-3. **Precision Analysis** — digit-split entropies of the quantized grid (meter/decimeter/centimeter/millimeter planes).
-4. **Residual Distribution** — Global-Gradient residuals: mean |r|, variance, zero %, median/p95/p99/max.
-5. **Predictor Performance (Entropy bpp)** — for each of the 6 predictors: global (full-superblock) entropy, 64×64-block entropy, final usage % of quadtree leaves, mean |residual|; plus second-order pass counts and bit savings.
-6. **Predictor Confidence** — % of residuals with |r| ≤ {0, 1, 2, 5, 10}.
-7. **Prediction Difficulty** — pixel share and average entropy of easy/medium/hard 64×64 blocks.
-8. **Residual Histogram** — residual value histogram of the selected leaves.
-9. **Quadtree Analysis** — adaptive-64 vs quadtree entropy comparison, leaf counts by size (512/256/128/64).
-10. **Wavelet Analysis** (`--wavelet`) — per-leaf CDF 5/3 subband entropies, zero %, mean magnitudes, variance, energy share, p95/p99 coefficients, zero-run statistics.
-11. **Entropy Coding & Context Modeling** — unique contexts per block, average/largest/smallest/median context size, probability rescales (context-dilution diagnostic), via `coding::analyze_symbols` — the same symbol model as the real coder.
-12. **Information Reduction Pipeline** — raw → quantized → predicted → coded (DWT + quadtree) entropy progression.
-13. **Wavelet Heuristic Evaluation** — the diagnostic `decision_use_wavelet = max residual correlation > 0.4 && adaptive_block64_entropy > 3.0`, compared against the actual measured benefit (`prediction_correct`).
-14. **Compute Analysis** — GDAL / quantization / analysis / total wall time.
+1. **Dataset Overview** — dimensions, NoData share, raw elevation range/mean/stddev (computed *inside* `read_gdal_quantized`'s windowed load, so no whole-grid Float64 buffer is needed), quantized-grid stats at the requested precision, and horizontal/vertical/diagonal Pearson correlation of the quantized grid.
+2. **Compressibility & Precision Guidance** — the estimated coding cost (`budget.total_bpp`) and estimated file size (cost bits + 36 B/block index + header) at the requested precision. When the precision is a power of ten below 1.0 (e.g. 0.01), the analyzer **re-runs the selection pass on coarser grids derived by ÷10, ÷100** and reports a precision-vs-size table (each row is a real selection pass, not an independence approximation). Digit-plane entropies (10-bin histograms of each decimal digit of the quantized magnitudes, O(1) memory) are reported as informational "where the detail lives" figures.
+3. **Predictor Analysis** — for each of the 6 predictors, one whole-512×512-superblock encode: the encoder-model cost (`selection_bpp` = 8 + 32·|params| + estimate), the true residual Shannon entropy (`shannon_bpp`), the share of quadtree leaves chosen, and mean |residual|. Ranked by selection bpp, plus the quadtree's overall winner and second-order pass adoption.
+4. **Quadtree Analysis** — leaf counts by size, total blocks, average block area, and partition + header overhead bpp.
+5. **Entropy Budget** — where the estimated bits go: zigzag magnitude-class entropy, zero-run entropy, fixed remainder bits, predictor parameters (32 bits each), and overhead (quadtree structure bits + 8-bit predictor id + 8-bit parameter count + nodata flag per block; the split-precision id byte is included when `precision < 1`). The total is the same number section 2 reports.
+6. **Wavelet Evaluation** (`--wavelet`) — a per-leaf CDF 5/3 transform with `max_wavelet_levels` applied to the selected partition, scored with the same estimator, against the predictor estimate (like-for-like, no ids/overhead). Recommends the cheaper pipeline.
+7. **Summary** — plain-language recommendations: biggest precision step, pipeline choice, terrain character, and wall time.
 
-All per-superblock accumulators are thread-local inside the callback and merged under a single mutex.
+Determinism: every per-superblock accumulator writes to a slot indexed by `s_idx` (exactly one handler invocation per slot), and all reductions iterate the slots **in order**, so the report is byte-reproducible for a given grid and settings. The only run-to-run difference is the wall-clock line.
 
 ---
 
@@ -419,7 +413,7 @@ Everything adaptive is driven by one principle — *minimize estimated encoded b
 | Second-order pass | `C(second-order) + 16 flag bits < C(plain)` |
 | Quadtree split | `Σ₄ C(children) + 1 < C(parent) + 1` |
 | Wavelet (whole-pipeline) | chosen up front via `--pipeline`; `max_levels` from block size |
-| Global wavelet heuristic (analyze only) | `max residual correlation > 0.4 && block entropy > 3.0` |
+| Wavelet (analyze only) | measured DWT estimate vs predictor estimate on the selected partition (`--wavelet`) |
 
 ```mermaid
 flowchart LR
@@ -452,12 +446,12 @@ flowchart TB
     LOCK --> DFLAG["decode-failure flag (std::atomic<bool>) + error mutex"]
 ```
 
-- **Encode/Analyze:** N workers via `run_pipeline`, dynamic task stealing on the superblock index. Each worker holds its own `sgrid`, leaf vector, and **copy** of the `PredictorSelector` (its `mutable` scratch is therefore thread-confined). The encoder callback additionally owns one reusable `EncodingContext`, `BitWriter`, and per-thread stats.
-- **Decode:** the same pool pattern lives in `XtmDecoder` (per-worker `sgrid`, a filtered block-index list, one reusable block buffer, and `decoded_res` scratch).
+- **Encode/Decode/Analyze:** N workers via `parallel_for_superblocks`, dynamic task stealing on the superblock index. Each worker callback holds its own thread-local state (e.g. `sgrid`, `PredictorSelector`, `BitWriter` for encode, or block buffers for decode) and loops over the superblocks it receives.
 - **Shared state:** `XtmWriter` (mutexed), `XtmReader` (mutexed), final stats merge (mutexed), decode-failure flag + error string (atomic + mutex).
-- **Memory notes (known trade-offs):**
-  - The CLI holds the whole input as Float64 (`TerrainBuffer`, 8 B/px) *and* the quantized `IntGrid` (5 B/px) during encode; a full decode likewise holds the ROI `IntGrid` plus the Float64 output buffer. Windowed/strip streaming is not yet implemented.
-  - `XtmWriter` buffers the **entire compressed file** in `pending_` until `finalize()`.
+- **Memory notes (bounded by design):**
+  - Encode (`xtm encode`), verify (`xtm verify`), and analyze (`xtm analyze`) ingest via `io::read_gdal_quantized`: the raster is read in 256-row windows (GDAL block cache capped at 64 MB) and quantized straight into the `IntGrid`, so the full Float64 `TerrainBuffer` (8 B/px) never exists. Peak is `O(grid)` for the `IntGrid` (5 B/px) plus worker scratch. Raw elevation statistics are accumulated inside the windowed read, so no path holds a whole-grid Float64 copy.
+  - Decode (`xtm decode`) writes through `io::GdalWriter` in 256-row bands via `terrain::dequantize_rows`, so the full Float64 output buffer (8 B/px) never exists either; peak is the ROI `IntGrid` (5 B/px) plus a band buffer.
+  - `XtmWriter` explicitly enforces an `O(superblock)` memory bound by sequentially flushing superblocks to disk as soon as they arrive in order.
   - Block-level scratch (residuals, bitstreams) is reused per worker, so per-thread footprint is O(superblock).
 
 ---
@@ -474,8 +468,8 @@ These pairs must stay bit-for-bit identical or the codec silently corrupts data:
 | Predictor encode formula == decode formula | per-predictor `encode()`/`decode()` pairs |
 | Second-order pass == its reversal | `Selector.cpp` (encode) vs `Decoder.cpp` (reversal) |
 | Wavelet forward == inverse | `CDF53Transform` (round-trip tested) |
-| Quantize scale ↔ dequantize scale | `quantize`/`dequantize` + `header.scale` |
-| Split-precision multiplier | `precision_multiplier` derivation (round(1/scale)) + `SplitPrecisionWrapper` |
+| Quantize precision ↔ dequantize precision | `quantize`/`dequantize` + `header.precision` |
+| Split-precision multiplier | `precision_multiplier` derivation (round(1/precision)) + inline combination in `Decoder.cpp` |
 | Selection estimator == coder symbol model | `estimate_shannon_bits` (Selector) vs `encode_stream` (ContextModeler) |
 | `max_wavelet_levels` derivation | single helper in `ContextModeler.hpp`, used by encoder, decoder, and analyzer |
 
@@ -485,7 +479,7 @@ These pairs must stay bit-for-bit identical or the codec silently corrupts data:
 
 | Constant | Value | Location |
 |---|---|---|
-| Superblock size | 512 | `run_pipeline` (Encoder/Analyzer) and Decoder |
+| Superblock size | 512 | `parallel_for_superblocks` (Encoder/Analyzer/Decoder) |
 | Quadtree min block | 64 | `QuadtreePartitioner` callers |
 | Quadtree max block | 512 | `QuadtreePartitioner` callers |
 | Predictor count | 6 | `PredictorId` enum |
@@ -496,7 +490,7 @@ These pairs must stay bit-for-bit identical or the codec silently corrupts data:
 | Zero-run cap | 255 | ContextModeler |
 | Frequency rescale threshold | 16384 | `FrequencyTable::increment` |
 | Noise-class delta | 200 | Selector quick classification |
-| Wavelet correlation threshold | 0.4 (and entropy > 3.0) | Analyzer heuristic (diagnostic only) |
+| Analyzer per-block overhead | 17 bits (25 with split precision) | id(8) + param count(8) + nodata flag(1), + prec id(8) |
 | Header format version | 4 (read: exactly 4) | Header.hpp/Header.cpp |
 
 ---
@@ -505,7 +499,7 @@ These pairs must stay bit-for-bit identical or the codec silently corrupts data:
 
 | Section | Bytes | Content |
 |---|---|---|
-| Header | variable | magic(4) version(2) flags(2) pipeline_id(1) transform(48) wkt_len(4) wkt(N) dims(8) scale(8) context(2) offset(8) [nodata(8)] |
+| Header | variable | magic(4) version(2) flags(2) pipeline_id(1) transform(48) wkt_len(4) wkt(N) dims(8) precision(8) context(2) offset(8) [nodata(8)] |
 | Block payloads | variable | one bitstream per quadtree leaf (see §3 Stage 7), in `sequence_id` (Z-)order |
 | Index | 4 + 36·n | entry count + per-block `{x,y,w,h,offset,length,crc32}` |
 | Header re-write | — | `index_offset` patched at `finalize()` |

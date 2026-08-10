@@ -16,17 +16,14 @@ enum class PredictorId : uint8_t {
     LeastSquares,
 };
 
-struct PredictionResult {
-    std::vector<int32_t> residuals;
-    std::vector<int32_t> parameters;
-};
+
 
 class Predictor {
 public:
     virtual ~Predictor() = default;
 
-    virtual void encode(const partition::BlockView& block, PredictionResult& out_result) const = 0;
-    virtual void decode(const PredictionResult& encoded, partition::MutableBlockView& block) const = 0;
+    virtual void encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const = 0;
+    virtual void decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& parameters, partition::MutableBlockView& block) const = 0;
     
     virtual const char* name() const = 0;
     virtual PredictorId id() const = 0;
@@ -35,8 +32,8 @@ public:
 #define DECLARE_PREDICTOR(className, stringName, enumId) \
 class className : public Predictor { \
 public: \
-    void encode(const partition::BlockView& block, PredictionResult& result) const override; \
-    void decode(const PredictionResult& encoded, partition::MutableBlockView& block) const override; \
+    void encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const override; \
+    void decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& parameters, partition::MutableBlockView& block) const override; \
     const char* name() const override { return stringName; } \
     PredictorId id() const override { return PredictorId::enumId; } \
 };

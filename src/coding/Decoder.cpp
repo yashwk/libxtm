@@ -6,7 +6,8 @@
 #include "xtm/coding/ContextModeler.hpp"
 #include "xtm/coding/RangeCoder.hpp"
 #include "xtm/predictor/Predictors.hpp"
-#include "xtm/predictor/SplitPrecisionWrapper.hpp"
+#include "xtm/coding/Pipeline.hpp"
+
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -29,49 +30,34 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
     
     analyzer::PipelineType pipeline_type = (header.pipeline_id == container::XtmHeader::PIPELINE_WAVELET) ? analyzer::PipelineType::Wavelet : analyzer::PipelineType::Predictor;
     ContextModel context_model = (header.context_model == 1) ? ContextModel::Extended : ContextModel::Simple;
-    bool has_precision = (header.scale < 1.0f);
+    coding::PipelineContext ctx(header.precision, context_model, pipeline_type);
     
     predictor::PredictorBank bank;
     
-    std::uint32_t superblock_size = 512;
-    std::uint32_t start_sx = (rx / superblock_size) * superblock_size;
-    std::uint32_t start_sy = (ry / superblock_size) * superblock_size;
-    std::uint32_t end_sx = ((rx + rw + superblock_size - 1) / superblock_size) * superblock_size;
-    std::uint32_t end_sy = ((ry + rh + superblock_size - 1) / superblock_size) * superblock_size;
-    
-    std::uint32_t num_superblocks_x = (end_sx - start_sx + superblock_size - 1) / superblock_size;
-    std::uint32_t num_superblocks_y = (end_sy - start_sy + superblock_size - 1) / superblock_size;
-    std::uint32_t num_superblocks_total = num_superblocks_x * num_superblocks_y;
-    
-    std::atomic<uint32_t> next_superblock_idx(0);
     std::atomic<uint32_t> blocks_decoded(0);
     
-    std::atomic<bool> decode_failed{false};
-    std::string decode_error_msg;
-    std::mutex decode_error_mutex;
-    
-    auto worker = [&]() {
-        try {
+    coding::parallel_for_superblocks(
+        header.grid_width, header.grid_height,
+        rx, ry, rw, rh, 512, num_threads,
+        [&](const coding::SuperblockIterator& next_sb) {
             uint32_t local_blocks_decoded = 0;
             coding::EncodingContext ctx_data;
             
             terrain::IntGrid sgrid;
             std::vector<container::BlockIndexEntry> sblocks;
             std::vector<uint8_t> block_buffer;
-            predictor::PredictionResult decoded_res;
+            std::vector<int32_t> decoded_residuals;
+            std::vector<int32_t> decoded_parameters;
+            sgrid.data.reserve(512 * 512);
+            sgrid.nodata_mask.reserve(512 * 512);
+            block_buffer.reserve(1 << 20);
+            decoded_residuals.reserve(512 * 512);
+            decoded_parameters.reserve(16);
             
-            while (true) {
-                if (decode_failed) break;
-                uint32_t idx = next_superblock_idx.fetch_add(1);
-                if (idx >= num_superblocks_total) break;
-                
-                std::uint32_t sy = start_sy + (idx / num_superblocks_x) * superblock_size;
-                std::uint32_t sx = start_sx + (idx % num_superblocks_x) * superblock_size;
-                
-                if (sy >= header.grid_height || sx >= header.grid_width) continue;
-                
-                sgrid.width = std::min(superblock_size, header.grid_width - sx);
-                sgrid.height = std::min(superblock_size, header.grid_height - sy);
+            uint32_t sx, sy, sgrid_w, sgrid_h, s_idx;
+            while (next_sb(sx, sy, sgrid_w, sgrid_h, s_idx)) {
+                sgrid.width = sgrid_w;
+                sgrid.height = sgrid_h;
                 sgrid.data.resize(sgrid.width * sgrid.height, 0);
                 sgrid.nodata_mask.resize(sgrid.width * sgrid.height, false);
                 
@@ -95,10 +81,10 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
                     const predictor::Predictor* prec_predictor = nullptr;
                     bool use_second_order = false;
                     
-                    decoded_res.residuals.clear();
-                    decoded_res.parameters.clear();
+                    decoded_residuals.clear();
+                    decoded_parameters.clear();
                     
-                    if (pipeline_type == analyzer::PipelineType::Predictor) {
+                    if (ctx.pipeline_type == analyzer::PipelineType::Predictor) {
                         uint32_t predictor_id_raw = br.read_bits(8);
                         use_second_order = (predictor_id_raw & 0x80) != 0;
                         uint32_t predictor_id = predictor_id_raw & 0x7F;
@@ -108,7 +94,7 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
                             throw std::runtime_error("Corrupt XTM: unknown predictor id " + std::to_string(predictor_id));
                         }
                         
-                        if (has_precision) {
+                        if (ctx.has_precision) {
                             uint32_t prec_pid_raw = br.read_bits(8);
                             if (prec_pid_raw != 0xFF) {
                                 prec_predictor = bank.by_id(static_cast<predictor::PredictorId>(prec_pid_raw));
@@ -120,7 +106,7 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
                             uint32_t p_bits = br.read_bits(32);
                             int32_t p;
                             std::memcpy(&p, &p_bits, sizeof(int32_t));
-                            decoded_res.parameters.push_back(p);
+                            decoded_parameters.push_back(p);
                         }
                     }
                     
@@ -155,39 +141,34 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
                         }
                     }
                     
-                    int32_t prec_multiplier = has_precision ? static_cast<int32_t>(std::round(1.0 / header.scale)) : 1;
-                    std::unique_ptr<predictor::SplitPrecisionWrapper> sp_wrapper;
-                    if (pipeline_type == analyzer::PipelineType::Predictor && has_precision && prec_predictor != nullptr) {
-                        sp_wrapper = std::make_unique<predictor::SplitPrecisionWrapper>(prec_multiplier, predictor, prec_predictor);
-                        predictor = sp_wrapper.get();
-                    }
+
                     
-                    uint32_t max_levels = (pipeline_type == analyzer::PipelineType::Wavelet) ? coding::max_wavelet_levels(entry.block_width, entry.block_height) : 0;
+                    uint32_t max_levels = (ctx.pipeline_type == analyzer::PipelineType::Wavelet) ? coding::max_wavelet_levels(entry.block_width, entry.block_height) : 0;
                     
                     coding::ArithmeticDecoder ad(br);
                     ctx_data.reset();
                     
                     uint32_t total_symbols = entry.block_width * entry.block_height;
-                    bool is_split_precision = (pipeline_type == analyzer::PipelineType::Predictor) && has_precision && (prec_predictor != nullptr);
+                    bool is_split_precision = (ctx.pipeline_type == analyzer::PipelineType::Predictor) && ctx.has_precision && (prec_predictor != nullptr);
                     uint32_t total_stream_len = is_split_precision ? (total_symbols * 2) : total_symbols;
-                    decoded_res.residuals.assign(total_stream_len, 0);
+                    decoded_residuals.assign(total_stream_len, 0);
                     
-                    coding::decode_stream(decoded_res.residuals, entry.block_width, entry.block_height, context_model, has_precision, ad, ctx_data);
+                    coding::decode_stream(decoded_residuals, entry.block_width, entry.block_height, ctx, ad, ctx_data);
                     
                     auto apply_second_order_reversal = [&]() {
                         if (use_second_order) {
                             for (uint32_t y = 0; y < entry.block_height; ++y) {
                                 for (uint32_t x = 0; x < entry.block_width; ++x) {
-                                    int32_t r = decoded_res.residuals[y * entry.block_width + x];
-                                    int32_t w_val = (x > 0) ? decoded_res.residuals[y * entry.block_width + x - 1] : 0;
-                                    int32_t n_val = (y > 0) ? decoded_res.residuals[(y - 1) * entry.block_width + x] : 0;
+                                    int32_t r = decoded_residuals[y * entry.block_width + x];
+                                    int32_t w_val = (x > 0) ? decoded_residuals[y * entry.block_width + x - 1] : 0;
+                                    int32_t n_val = (y > 0) ? decoded_residuals[(y - 1) * entry.block_width + x] : 0;
                                     
                                     int32_t p = 0;
                                     if (x > 0 && y > 0) p = w_val / 2 + n_val / 2;
                                     else if (x > 0) p = w_val;
                                     else if (y > 0) p = n_val;
                                     
-                                    decoded_res.residuals[y * entry.block_width + x] = r + p;
+                                    decoded_residuals[y * entry.block_width + x] = r + p;
                                 }
                             }
                         }
@@ -205,16 +186,57 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
                     mbv.width = entry.block_width;
                     mbv.height = entry.block_height;
                     
-                    if (pipeline_type == analyzer::PipelineType::Wavelet) {
-                        transform::CDF53Transform::inverse_2d(decoded_res.residuals, entry.block_width, entry.block_height, max_levels);
+                    if (ctx.pipeline_type == analyzer::PipelineType::Wavelet) {
+                        transform::CDF53Transform::inverse_2d(decoded_residuals, entry.block_width, entry.block_height, max_levels);
                         for (uint32_t y = 0; y < entry.block_height; ++y) {
                             for (uint32_t x = 0; x < entry.block_width; ++x) {
-                                mbv.set(x, y, decoded_res.residuals[y * entry.block_width + x]);
+                                mbv.set(x, y, decoded_residuals[y * entry.block_width + x]);
                             }
                         }
                     } else {
                         apply_second_order_reversal();
-                        predictor->decode(decoded_res, mbv);
+                        if (is_split_precision) {
+                            uint32_t num_samples = entry.block_width * entry.block_height;
+                            std::vector<int32_t> m_res(decoded_residuals.begin(), decoded_residuals.begin() + num_samples);
+                            std::vector<int32_t> p_res(decoded_residuals.begin() + num_samples, decoded_residuals.end());
+                            
+                            terrain::IntGrid m_grid, p_grid;
+                            m_grid.width = sgrid.width; m_grid.height = sgrid.height;
+                            p_grid.width = sgrid.width; p_grid.height = sgrid.height;
+                            m_grid.data.resize(sgrid.width * sgrid.height, 0); p_grid.data.resize(sgrid.width * sgrid.height, 0);
+                            
+                            // Copy context from the main grid into temp grids
+                            uint32_t start_x = (mbv.x_offset > 0) ? mbv.x_offset - 1 : 0;
+                            uint32_t start_y = (mbv.y_offset > 0) ? mbv.y_offset - 1 : 0;
+                            
+                            for (uint32_t y = start_y; y < mbv.y_offset + mbv.height; ++y) {
+                                for (uint32_t x = start_x; x < mbv.x_offset + mbv.width; ++x) {
+                                    if (y >= mbv.y_offset && x >= mbv.x_offset) continue;
+                                    int32_t z = mbv.grid->get(x, y);
+                                    m_grid.data[y * m_grid.width + x] = z / ctx.precision_multiplier;
+                                    p_grid.data[y * p_grid.width + x] = z % ctx.precision_multiplier;
+                                }
+                            }
+                            
+                            partition::MutableBlockView m_view = mbv;
+                            m_view.grid = &m_grid;
+                            
+                            partition::MutableBlockView p_view = mbv;
+                            p_view.grid = &p_grid;
+                            
+                            predictor->decode(m_res, decoded_parameters, m_view);
+                            prec_predictor->decode(p_res, decoded_parameters, p_view);
+                            
+                            for (uint32_t y = 0; y < entry.block_height; ++y) {
+                                for (uint32_t x = 0; x < entry.block_width; ++x) {
+                                    int32_t m = m_view.get(x, y);
+                                    int32_t p = p_view.get(x, y);
+                                    mbv.set(x, y, m * ctx.precision_multiplier + p);
+                                }
+                            }
+                        } else {
+                            predictor->decode(decoded_residuals, decoded_parameters, mbv);
+                        }
                     }
                 }
                 
@@ -232,27 +254,8 @@ DecodeResult XtmDecoder::decode(container::XtmReader& reader,
             }
             
             blocks_decoded.fetch_add(local_blocks_decoded);
-        } catch (const std::exception& e) {
-            std::lock_guard<std::mutex> lock(decode_error_mutex);
-            if (!decode_failed) {
-                decode_error_msg = e.what();
-                decode_failed = true;
-            }
         }
-    };
-    
-    uint32_t threads_to_use = num_threads == 0 ? std::thread::hardware_concurrency() : num_threads;
-    std::vector<std::thread> threads;
-    for (uint32_t i = 0; i < threads_to_use; ++i) {
-        threads.emplace_back(worker);
-    }
-    for (auto& t : threads) {
-        t.join();
-    }
-    
-    if (decode_failed) {
-        throw std::runtime_error(decode_error_msg);
-    }
+    );
     
     result.blocks_decoded = blocks_decoded;
     return result;

@@ -1,11 +1,12 @@
 #include "xtm/coding/ContextModeler.hpp"
+#include "xtm/coding/PipelineContext.hpp"
 #include "xtm/coding/ZigZag.hpp"
 #include "xtm/coding/RangeCoder.hpp"
 #include <cmath>
 
 namespace xtm::coding {
 
-void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, ArithmeticEncoder& ac, EncodingContext& ctx_data) {
+void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t height, const PipelineContext& pctx, ArithmeticEncoder& ac, EncodingContext& ctx_data) {
     
     auto process_stream = [&](uint32_t start_idx, uint32_t length, ContextStream stream) {
         uint32_t zero_run = 0;
@@ -18,7 +19,7 @@ void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t he
             ctx.stream = static_cast<uint8_t>(stream);
             ctx.neighbour_activity = 0;
             
-            if (model == ContextModel::Extended && i > 0) {
+            if (pctx.context_model == ContextModel::Extended && i > 0) {
                 if (std::abs(data[start_idx + i - 1]) > 2) {
                     ctx.neighbour_activity = 1;
                 }
@@ -71,12 +72,12 @@ void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t he
     uint32_t length = width * height;
     process_stream(0, length, ContextStream::Meter);
     
-    if (has_precision) {
+    if (pctx.has_precision) {
         process_stream(length, length, ContextStream::Precision);
     }
 }
 
-void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, ArithmeticDecoder& ad, EncodingContext& ctx_data) {
+void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, const PipelineContext& pctx, ArithmeticDecoder& ad, EncodingContext& ctx_data) {
     
     auto process_stream = [&](uint32_t start_idx, uint32_t length, ContextStream stream) {
         uint32_t decoded = 0;
@@ -85,7 +86,7 @@ void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, 
             ctx.stream = static_cast<uint8_t>(stream);
             ctx.neighbour_activity = 0;
             
-            if (model == ContextModel::Extended && decoded > 0) {
+            if (pctx.context_model == ContextModel::Extended && decoded > 0) {
                 if (std::abs(data[start_idx + decoded - 1]) > 2) {
                     ctx.neighbour_activity = 1;
                 }
@@ -118,12 +119,12 @@ void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, 
     uint32_t length = width * height;
     process_stream(0, length, ContextStream::Meter);
     
-    if (has_precision) {
+    if (pctx.has_precision) {
         process_stream(length, length, ContextStream::Precision);
     }
 }
 
-void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, std::vector<int32_t>& mag_classes, std::vector<int32_t>& run_lengths, std::unordered_map<Context, uint32_t>& context_sizes, uint32_t& remainder_bits) {
+void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, const PipelineContext& pctx, std::vector<int32_t>& mag_classes, std::vector<int32_t>& run_lengths, std::unordered_map<Context, uint32_t>& context_sizes, uint32_t& remainder_bits) {
     
     auto process_stream = [&](uint32_t start_idx, uint32_t length, ContextStream stream) {
         uint32_t zero_run = 0;
@@ -136,7 +137,7 @@ void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t 
             ctx.stream = static_cast<uint8_t>(stream);
             ctx.neighbour_activity = 0;
             
-            if (model == ContextModel::Extended && i > 0) {
+            if (pctx.context_model == ContextModel::Extended && i > 0) {
                 if (std::abs(data[start_idx + i - 1]) > 2) {
                     ctx.neighbour_activity = 1;
                 }
@@ -176,7 +177,7 @@ void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t 
     uint32_t length = width * height;
     process_stream(0, length, ContextStream::Meter);
     
-    if (has_precision) {
+    if (pctx.has_precision) {
         process_stream(length, length, ContextStream::Precision);
     }
 }

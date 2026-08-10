@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <map>
 
 namespace xtm::container {
 
@@ -13,16 +14,6 @@ public:
     explicit XtmWriter(const std::string& filepath, const XtmHeader& header);
     ~XtmWriter();
 
-    // Buffers a block's compressed bitstream. Payloads are written to the
-    // file only at finalize(), in deterministic (y, x) order, so the output
-    // bytes no longer depend on worker thread completion order.
-    void write_block(uint32_t x, uint32_t y, uint32_t width, uint32_t height, const std::vector<uint8_t>& bitstream, uint64_t sequence_id = 0);
-
-    // Flushes the buffered block payloads (sorted by sequence_id) then the Block
-    // Index Table to the end of the file, and updates the header.
-    void finalize();
-
-private:
     struct PendingBlock {
         uint32_t x = 0;
         uint32_t y = 0;
@@ -32,10 +23,21 @@ private:
         uint64_t sequence_id = 0;
     };
 
+    // Buffers a superblock's blocks. Payloads are written to the file as soon
+    // as the sequentially expected superblock arrives.
+    void write_superblock(uint32_t s_idx, std::vector<PendingBlock> blocks);
+
+    // Flushes the Block Index Table to the end of the file and updates the header.
+    void finalize();
+
+private:
+
     std::string filepath_;
     std::fstream stream_;
     XtmHeader header_;
-    std::vector<PendingBlock> pending_;
+    std::map<uint32_t, std::vector<PendingBlock>> buffered_superblocks_;
+    std::vector<BlockIndexEntry> final_index_;
+    uint32_t expected_s_idx_ = 0;
     bool finalized_ = false;
     std::mutex write_mutex_;
 };

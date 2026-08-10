@@ -2,6 +2,7 @@
 #include "xtm/coding/RangeCoder.hpp"
 #include "xtm/coding/ZigZag.hpp"
 #include "xtm/coding/ContextModeler.hpp"
+#include "xtm/coding/PipelineContext.hpp"
 #include <algorithm>
 #include <numeric>
 #include <random>
@@ -15,7 +16,8 @@ std::vector<uint8_t> encode_block(std::vector<int32_t> data, uint32_t w, uint32_
     BitWriter bw;
     ArithmeticEncoder ac(bw);
     EncodingContext ctx;
-    encode_stream(data, w, h, ContextModel::Simple, false, ac, ctx);
+    PipelineContext pctx(1.0, ContextModel::Simple);
+    encode_stream(data, w, h, pctx, ac, ctx);
     ac.flush();
     bw.flush();
     return bw.get_buffer();
@@ -27,7 +29,8 @@ size_t excess_after_decode(const std::vector<uint8_t>& buf, uint32_t w, uint32_t
     EncodingContext ctx;
     
     std::vector<int32_t> out_data(w * h, 0);
-    decode_stream(out_data, w, h, ContextModel::Simple, false, ad, ctx);
+    PipelineContext pctx(1.0, ContextModel::Simple);
+    decode_stream(out_data, w, h, pctx, ad, ctx);
     
     return br.excess_bits();
 }

@@ -26,6 +26,18 @@
 
 namespace xtm::cli {
 
+double parse_precision(const std::string& arg) {
+    if (arg == "m" || arg == "meters" || arg == "meter") return 1.0;
+    if (arg == "dm" || arg == "decimeter" || arg == "decimeters") return 0.1;
+    if (arg == "cm" || arg == "centimeter" || arg == "centimeters") return 0.01;
+    if (arg == "mm" || arg == "millimeter" || arg == "millimeters") return 0.001;
+    try {
+        return std::stod(arg);
+    } catch (const std::exception&) {
+        return -1.0;
+    }
+}
+
 void print_pipeline_statistics(const coding::EncodeResult& result, analyzer::PipelineType pipeline_type, const std::vector<const predictor::Predictor*>& predictors_list) {
     if (pipeline_type == analyzer::PipelineType::Wavelet) {
         std::cout << "\n=== Wavelet Statistics ===\n";
@@ -82,7 +94,7 @@ void print_pipeline_statistics(const coding::EncodeResult& result, analyzer::Pip
 
 int run_encode(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "Usage: xtm encode <input.tif> -o <output.xtm> [--scale <value>] [--pipeline predictor|wavelet]\n";
+        std::cerr << "Usage: xtm encode <input.tif> -o <output.xtm> [--precision <value>] [--pipeline predictor|wavelet]\n";
         return 1;
     }
     
@@ -90,10 +102,10 @@ int run_encode(int argc, char** argv) {
     std::string output_file;
     
     if (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {
-        std::cout << "Usage: xtm encode <input.tif> -o <output.xtm> [--scale <value>] [--pipeline predictor|wavelet]\n";
+        std::cout << "Usage: xtm encode <input.tif> -o <output.xtm> [--precision <value>] [--pipeline predictor|wavelet]\n";
         return 0;
     }
-    double scale = 1.0;
+    double precision = 1.0;
     bool disable_quadtree = false;
     coding::ContextModel model = coding::ContextModel::Simple;
     analyzer::PipelineType pipeline_type = analyzer::PipelineType::Predictor;
@@ -103,7 +115,7 @@ int run_encode(int argc, char** argv) {
         bool has_next = (i + 1 < argc);
         
         if (arg == "-o" && has_next) output_file = argv[++i];
-        else if (arg == "--scale" && has_next) scale = std::stod(argv[++i]);
+        else if ((arg == "--scale" || arg == "--precision") && has_next) precision = parse_precision(argv[++i]);
         else if (arg == "--disable-quadtree") disable_quadtree = true;
         else if (arg == "--context" && has_next) {
             std::string c = argv[++i];
@@ -130,8 +142,8 @@ int run_encode(int argc, char** argv) {
         return 1;
     }
     
-    if (scale <= 0.0) {
-        std::cerr << "Error: --scale must be positive (got " << scale << ").\n";
+    if (precision <= 0.0) {
+        std::cerr << "Error: invalid --precision value.\n";
         return 1;
     }
     
@@ -141,15 +153,15 @@ int run_encode(int argc, char** argv) {
         auto t_start = high_resolution_clock::now();
         
         std::cout << "Loading dataset: " << input_file << "...\n";
-        auto buffer = io::read_gdal(input_file);
         
-        std::cout << "Encoding terrain (scale=" << scale << ") to " << output_file << "...\n";
+        std::cout << "Encoding terrain (precision=" << precision << ") to " << output_file << "...\n";
         if (disable_quadtree) {
             std::cout << "Quadtree disabled (using fixed 64x64 blocks).\n";
         }
         
         auto t_quant_start = high_resolution_clock::now();
-        auto cgrid = terrain::quantize(buffer.view(), scale);
+        io::RasterInfo rinfo;
+        auto cgrid = io::read_gdal_quantized(input_file, precision, rinfo);
         auto t_quant_end = high_resolution_clock::now();
         double time_quant = duration<double, std::milli>(t_quant_end - t_quant_start).count();
         
@@ -159,12 +171,12 @@ int run_encode(int argc, char** argv) {
         container::XtmHeader header;
         header.grid_width = cgrid.width;
         header.grid_height = cgrid.height;
-        header.scale = scale;
-        header.wkt_projection = buffer.wkt_projection;
+        header.precision = precision;
+        header.wkt_projection = rinfo.wkt_projection;
         header.context_model = (model == coding::ContextModel::Extended) ? 1 : 0;
-        if (buffer.nodata_value.has_value()) {
+        if (rinfo.nodata_value.has_value()) {
             header.flags |= container::XtmHeader::FLAG_HAS_NODATA;
-            header.nodata_value = *buffer.nodata_value;
+            header.nodata_value = *rinfo.nodata_value;
         }
         header.pipeline_id = (pipeline_type == analyzer::PipelineType::Wavelet) ? container::XtmHeader::PIPELINE_WAVELET : container::XtmHeader::PIPELINE_PREDICTOR;
         if (disable_quadtree) {
@@ -173,19 +185,15 @@ int run_encode(int argc, char** argv) {
         
         std::cout << "Pipeline Type: " << (pipeline_type == analyzer::PipelineType::Wavelet ? "Wavelet" : "Predictor") << "\n";
         
-        const auto& gt = buffer.view().transform;
-        header.transform = gt;
+        header.transform = rinfo.transform;
         
         // Output file creation
         container::XtmWriter writer(output_file, header);
         
-        coding::Options options;
-        options.scale = scale;
-        options.context_model = model;
-        options.pipeline_type = pipeline_type;
-        options.disable_quadtree = disable_quadtree;
+        coding::PipelineContext ctx(precision, model, pipeline_type);
+        ctx.disable_quadtree = disable_quadtree;
         
-        auto encode_result = coding::XtmEncoder::encode(cgrid, writer, options);
+        auto encode_result = coding::XtmEncoder::encode(cgrid, writer, ctx);
         
         std::cout << "Partitioned into " << encode_result.total_blocks << " independent blocks across superblocks.\n";
         

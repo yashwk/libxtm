@@ -1,184 +1,71 @@
 #pragma once
 #include "xtm/Terrain.hpp"
-#include "xtm/coding/ContextModeler.hpp"
-#include <map>
+#include "xtm/coding/PipelineContext.hpp"
+#include "xtm/predictor/Predictor.hpp"
 #include <vector>
+#include <cstdint>
 
 namespace xtm::analyzer {
 
-struct ElevationStats {
-    float min_val;
-    float max_val;
-    double mean;
-    double stddev;
-    std::size_t unique_values;
-    double shannon_entropy;
+// Raw elevation statistics of the original (unquantized) raster. Accumulated
+// by the reader during the windowed load; nodata cells are excluded.
+struct RawElevationStats {
+    double min_val = 0.0;
+    double max_val = 0.0;
+    double mean = 0.0;
+    double stddev = 0.0;
+    std::size_t valid_pixels = 0;
 };
 
-struct PrecisionStats {
-    double meter_entropy = 0;
-    double decimeter_entropy = 0;
-    double centimeter_entropy = 0;
-    double millimeter_entropy = 0;
+// Statistics of the quantized grid, i.e. the values the encoder compresses.
+struct QuantizedStats {
+    double min_val = 0.0;
+    double max_val = 0.0;
+    double mean = 0.0;
+    double stddev = 0.0;
 };
 
-struct SpatialDifferences {
-    double delta_x_entropy;
-    double delta_y_entropy;
-};
-
+// Per-predictor results from encoding every whole 512x512 superblock with
+// that predictor alone. selection_bpp uses the encoder's own scoring
+// (8-bit id + 32 bits/parameter + zigzag-model estimate), shannon_bpp is the
+// true residual entropy.
 struct PredictorPerformance {
-    double left_entropy;
-    double gradient_entropy;
-    double jpegls_entropy;
-    double polynomial_entropy;
-    double gap_entropy = 0;
-    double least_squares_entropy = 0;
+    predictor::PredictorId id = predictor::PredictorId::Left;
+    const char* name = "";
+    double selection_bpp = 0.0;
+    double shannon_bpp = 0.0;
+    std::size_t usage_blocks = 0;
+    double avg_abs_residual = 0.0;
 };
 
-struct PredictorConfidence {
-    double pct_exact = 0;
-    double pct_within_1 = 0;
-    double pct_within_2 = 0;
-    double pct_within_5 = 0;
-    double pct_within_10 = 0;
+// Where the encoder's estimated bit budget goes. Mirrors the selection cost
+// model (zigzag classes + zero runs + remainder bits) plus the fixed per-block
+// and quadtree overhead of the container.
+struct EntropyBudget {
+    double magnitude_class_bpp = 0.0;
+    double zero_run_bpp = 0.0;
+    double remainder_bpp = 0.0;
+    double params_bpp = 0.0;
+    double overhead_bpp = 0.0;
+    double total_bpp = 0.0;
 };
 
-struct PredictionDifficulty {
-    double easy_pct = 0;
-    double medium_pct = 0;
-    double hard_pct = 0;
-    double easy_avg_entropy = 0;
-    double medium_avg_entropy = 0;
-    double hard_avg_entropy = 0;
+// Shannon entropy of one decimal digit plane of the quantized magnitudes
+// (place 0 = units digit = the finest plane present). Informational: digits
+// are correlated, so they cannot be added up to predict coarser-precision
+// costs - use precision_estimates for that.
+struct DigitPlaneEntropy {
+    int place = 0; // 0 = units, 1 = tens, ...
+    double bpp = 0.0;
 };
 
-struct PredictorUsage {
-    std::size_t left_count = 0;
-    std::size_t gradient_count = 0;
-    std::size_t jpegls_count = 0;
-    std::size_t polynomial_count = 0;
-    std::size_t gap_count = 0;
-    std::size_t least_squares_count = 0;
-    
-    double left_mag_sum = 0;
-    double gradient_mag_sum = 0;
-    double jpegls_mag_sum = 0;
-    double polynomial_mag_sum = 0;
-    double gap_mag_sum = 0;
-    double least_squares_mag_sum = 0;
-    
-    double left_final_bits = 0;
-    double gradient_final_bits = 0;
-    double jpegls_final_bits = 0;
-    double polynomial_final_bits = 0;
-    double gap_final_bits = 0;
-    double least_squares_final_bits = 0;
-    
-    std::size_t left_final_pixels = 0;
-    std::size_t gradient_final_pixels = 0;
-    std::size_t jpegls_final_pixels = 0;
-    std::size_t polynomial_final_pixels = 0;
-    std::size_t gap_final_pixels = 0;
-    std::size_t least_squares_final_pixels = 0;
-    
-    std::size_t second_order_pass_count = 0;
-    double second_order_bits_savings = 0.0;
-    double base_bits_total = 0.0;
-    double second_order_bits_savings_pct = 0.0;
-};
-
-struct QuadtreeStats {
-    std::size_t size_512_count = 0;
-    std::size_t size_256_count = 0;
-    std::size_t size_128_count = 0;
-    std::size_t size_64_count = 0;
-};
-
-struct SubbandStats {
-    double ll_entropy = 0;
-    double lh_entropy = 0;
-    double hl_entropy = 0;
-    double hh_entropy = 0;
-    
-    double ll_zero_pct = 0;
-    double lh_zero_pct = 0;
-    double hl_zero_pct = 0;
-    double hh_zero_pct = 0;
-    
-    double ll_mean_mag = 0;
-    double lh_mean_mag = 0;
-    double hl_mean_mag = 0;
-    double hh_mean_mag = 0;
-    
-    double ll_var = 0;
-    double lh_var = 0;
-    double hl_var = 0;
-    double hh_var = 0;
-    
-    double ll_energy_pct = 0;
-    double lh_energy_pct = 0;
-    double hl_energy_pct = 0;
-    double hh_energy_pct = 0;
-    
-    double avg_zero_run = 0;
-    std::size_t max_zero_run = 0;
-    std::size_t ll_count = 0;
-    std::size_t lh_count = 0;
-    std::size_t hl_count = 0;
-    std::size_t hh_count = 0;
-    int32_t p95_coeff = 0;
-    int32_t p99_coeff = 0;
-};
-
-struct ContextStats {
-    std::size_t unique_contexts = 0;
-    double avg_symbols_per_context = 0;
-    std::size_t largest_context = 0;
-    std::size_t smallest_context = 0;
-    std::size_t median_context_size = 0;
-    std::size_t probability_rescales = 0;
-};
-
-struct CorrelationStats {
-    double raw_horizontal = 0;
-    double raw_vertical = 0;
-    double raw_diagonal = 0;
-    
-    double residual_horizontal = 0;
-    double residual_vertical = 0;
-    double residual_diagonal = 0;
-};
-
-struct ResidualDistributionStats {
-    double mean_abs = 0;
-    double bits_per_sample = 0;
-    bool use_wavelet = false;
-    uint32_t wavelet_levels = 0;
-    bool use_second_order = false;
-    
-    double variance = 0;
-    double zero_pct = 0;
-    int32_t median = 0;
-    int32_t p95 = 0;
-    int32_t p99 = 0;
-    int32_t max_val = 0;
-};
-
-struct TransformEvaluationStats {
-    double estimated_wavelet_benefit = 0;
-    double actual_wavelet_benefit = 0;
-    bool decision_use_wavelet = false;
-    bool prediction_correct = false;
-    double predicted_gain = 0;
-    double prediction_error = 0;
-};
-
-struct TimingStats {
-    double gdal_ms = 0;
-    double quantization_ms = 0;
-    double analyze_ms = 0;
-    double total_ms = 0;
+// Estimated cost of encoding at a given precision, computed by re-running the
+// encoder's selection pass on grids derived from the quantized data (values
+// divided by 10^k). Only present for power-of-ten precisions < 1.
+struct PrecisionEstimate {
+    double precision = 0.0;
+    double bpp = 0.0;
+    double estimated_file_bytes = 0.0;
 };
 
 struct AnalyzerOptions {
@@ -186,35 +73,55 @@ struct AnalyzerOptions {
 };
 
 struct AnalysisReport {
-    std::uint32_t width;
-    std::uint32_t height;
-    std::size_t sample_count;
-    
-    ElevationStats elevation;
-    PrecisionStats precision;
-    SpatialDifferences spatial;
-    PredictorPerformance global_predictors;
-    PredictorPerformance block64_predictors;
-    
-    double adaptive_block64_entropy;
-    double quadtree_entropy;
-    std::size_t quadtree_leaves;
-    
-    double dwt_quadtree_entropy;
-    
-    PredictorUsage predictor_usage;
-    PredictorConfidence predictor_confidence;
-    PredictionDifficulty prediction_difficulty;
-    std::vector<std::pair<int32_t, double>> residual_histogram;
-    QuadtreeStats quadtree_stats;
-    SubbandStats wavelet_stats;
-    ContextStats context_stats;
-    CorrelationStats correlation_stats;
-    ResidualDistributionStats residual_dist_stats;
-    TransformEvaluationStats transform_eval_stats;
-    TimingStats timing;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::size_t sample_count = 0;
+    std::size_t nodata_pixels = 0;
+    double precision = 1.0;
+
+    RawElevationStats raw;
+    QuantizedStats quantized;
+
+    double corr_h = 0.0;
+    double corr_v = 0.0;
+    double corr_d = 0.0;
+
+    // Digit-plane entropies (finer first); empty when the precision is not a
+    // power of ten.
+    std::vector<DigitPlaneEntropy> digit_planes;
+
+    // Estimated size at the current precision followed by each 10x coarser
+    // precision derivable from the grid (finest first). Empty when the
+    // precision is not a power of ten below 1.0.
+    std::vector<PrecisionEstimate> precision_estimates;
+
+    // All 6 predictors, ranked by selection_bpp.
+    std::vector<PredictorPerformance> predictors;
+    predictor::PredictorId chosen_predictor = predictor::PredictorId::Left;
+    double chosen_usage_pct = 0.0;
+    double second_order_usage_pct = 0.0;
+
+    std::size_t leaves_512 = 0;
+    std::size_t leaves_256 = 0;
+    std::size_t leaves_128 = 0;
+    std::size_t leaves_64 = 0;
+    std::size_t total_blocks = 0;
+
+    EntropyBudget budget;
+    double estimated_file_bytes = 0.0;
+
+    bool wavelet_evaluated = false;
+    double predictor_estimate_bpp = 0.0;
+    double wavelet_estimate_bpp = 0.0;
+    bool wavelet_recommended = false;
 };
 
-AnalysisReport analyze_terrain(const TerrainView& view, double scale = 1.0, coding::ContextModel model = coding::ContextModel::Extended, const AnalyzerOptions& options = AnalyzerOptions());
+// Analyzes the quantized grid with the same partitioner and selector the
+// encoder uses. All aggregates are reduced serially in superblock order, so
+// the report is deterministic for a given grid and settings.
+AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
+                               const RawElevationStats& raw,
+                               const coding::PipelineContext& ctx,
+                               const AnalyzerOptions& options = AnalyzerOptions());
 
 } // namespace xtm::analyzer

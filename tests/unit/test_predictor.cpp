@@ -30,9 +30,10 @@ void test_roundtrip(const predictor::Predictor& pred, uint32_t width, uint32_t h
     block.width = width;
     block.height = height;
     
-    predictor::PredictionResult encoded;
-    pred.encode(block, encoded);
-    ASSERT_EQ(encoded.residuals.size(), original.data.size());
+    std::vector<int32_t> residuals;
+    std::vector<int32_t> parameters;
+    pred.encode(block, residuals, parameters);
+    ASSERT_EQ(residuals.size(), original.data.size());
     
     terrain::IntGrid decoded_grid;
     decoded_grid.width = width;
@@ -46,7 +47,7 @@ void test_roundtrip(const predictor::Predictor& pred, uint32_t width, uint32_t h
     mblock.width = width;
     mblock.height = height;
     
-    pred.decode(encoded, mblock);
+    pred.decode(residuals, parameters, mblock);
     
     for (size_t i = 0; i < original.data.size(); ++i) {
         ASSERT_EQ(original.data[i], decoded_grid.data[i]) << "Mismatch at index " << i << " for predictor " << pred.name();
@@ -108,9 +109,9 @@ TEST(PredictorTest, PolynomialPredictorRejectsMissingParameters) {
     mblock.width = 16;
     mblock.height = 16;
 
-    predictor::PredictionResult encoded;
-    encoded.residuals.assign(16 * 16, 0);
-    EXPECT_THROW(p.decode(encoded, mblock), std::runtime_error);
+    std::vector<int32_t> residuals(16 * 16, 0);
+    std::vector<int32_t> parameters;
+    EXPECT_THROW(p.decode(residuals, parameters, mblock), std::runtime_error);
 }
 
 TEST(PredictorTest, LeastSquaresPredictorRejectsMissingParameters) {
@@ -127,9 +128,9 @@ TEST(PredictorTest, LeastSquaresPredictorRejectsMissingParameters) {
     mblock.width = 16;
     mblock.height = 16;
 
-    predictor::PredictionResult encoded;
-    encoded.residuals.assign(16 * 16, 0);
-    EXPECT_THROW(p.decode(encoded, mblock), std::runtime_error);
+    std::vector<int32_t> residuals(16 * 16, 0);
+    std::vector<int32_t> parameters;
+    EXPECT_THROW(p.decode(residuals, parameters, mblock), std::runtime_error);
 }
 
 TEST(PredictorTest, PolynomialPredictorFitsCubicSurface) {
@@ -162,13 +163,14 @@ TEST(PredictorTest, PolynomialPredictorFitsCubicSurface) {
     block.width = mblock.width;
     block.height = mblock.height;
     
-    predictor::PredictionResult encoded;
-    p.encode(block, encoded);
+    std::vector<int32_t> residuals;
+    std::vector<int32_t> parameters;
+    p.encode(block, residuals, parameters);
 
-    EXPECT_EQ(encoded.parameters.size(), 11);
+    EXPECT_EQ(parameters.size(), 11);
 
     int32_t max_res = 0;
-    for (int32_t r : encoded.residuals) {
+    for (int32_t r : residuals) {
         max_res = std::max(max_res, std::abs(r));
     }
     EXPECT_LT(max_res, 100);
@@ -182,7 +184,7 @@ TEST(PredictorTest, PolynomialPredictorFitsCubicSurface) {
     dec_block.width = 64;
     dec_block.height = 64;
     
-    p.decode(encoded, dec_block);
+    p.decode(residuals, parameters, dec_block);
     for (size_t i = 0; i < grid.data.size(); ++i) {
         EXPECT_EQ(decoded_grid.data[i], grid.data[i]);
     }

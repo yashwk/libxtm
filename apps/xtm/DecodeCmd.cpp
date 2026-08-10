@@ -11,6 +11,8 @@
 #include "xtm/coding/Decoder.hpp"
 #include <string>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -94,9 +96,14 @@ int run_decode(int argc, char** argv) {
         if (header.flags & container::XtmHeader::FLAG_HAS_NODATA) {
             nodata_val = header.nodata_value;
         }
-        TerrainBuffer out_buffer = terrain::dequantize(roi_grid, header.scale, nodata_val, gt);
-        out_buffer.wkt_projection = header.wkt_projection;
-        io::write_gdal(output_file, out_buffer.view());
+        io::GdalWriter writer(output_file, rw, rh, gt, header.wkt_projection, nodata_val);
+        const std::uint32_t band_rows = 256;
+        std::vector<double> band(static_cast<std::size_t>(rw) * band_rows);
+        for (std::uint32_t y0 = 0; y0 < static_cast<std::uint32_t>(rh); y0 += band_rows) {
+            std::uint32_t rows = std::min(band_rows, static_cast<std::uint32_t>(rh) - y0);
+            terrain::dequantize_rows(roi_grid, y0, rows, header.precision, nodata_val, band.data());
+            writer.write_rows(y0, band.data(), rows, rw);
+        }
         
         std::cout << "Successfully exported TIFF!\n";
         

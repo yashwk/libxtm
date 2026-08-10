@@ -1,7 +1,7 @@
 #pragma once
 #include "xtm/terrain/Quantization.hpp"
 #include "xtm/container/IO.hpp"
-#include "xtm/coding/Options.hpp"
+#include "xtm/coding/PipelineContext.hpp"
 #include <cstdint>
 
 namespace xtm::coding {

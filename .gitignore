@@ -17,6 +17,7 @@ __pycache__/
 
 # Artifacts
 *.xtm
+*.tif
 benchmark_results.csv
 
 # OS

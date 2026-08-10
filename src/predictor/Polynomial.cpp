@@ -66,9 +66,9 @@ namespace {
     }
 }
 
-void PolynomialPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
-    result.residuals.clear();
-    result.parameters.clear();
+void PolynomialPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
+    residuals.clear();
+    parameters.clear();
     
     int w = block.width;
     int h = block.height;
@@ -80,7 +80,8 @@ void PolynomialPredictor::encode(const partition::BlockView& block, PredictionRe
     // Test orders 1, 2, 3
     int order_params[3] = {3, 6, 10};
     
-    PredictionResult best_res;
+    std::vector<int32_t> best_res_residuals;
+    std::vector<int32_t> best_res_parameters;
     double best_cost = std::numeric_limits<double>::infinity();
     
     for (int o = 0; o < 3; ++o) {
@@ -119,14 +120,15 @@ void PolynomialPredictor::encode(const partition::BlockView& block, PredictionRe
             continue; // Singular matrix, skip this order
         }
         
-        PredictionResult curr_res;
-        curr_res.residuals.reserve(num_samples);
-        curr_res.parameters.push_back(o + 1); // Parameter 0 is the order (1, 2, or 3)
+        std::vector<int32_t> curr_res_residuals;
+        std::vector<int32_t> curr_res_parameters;
+        curr_res_residuals.reserve(num_samples);
+        curr_res_parameters.push_back(o + 1); // Parameter 0 is the order (1, 2, or 3)
         
         for (int k = 0; k < k_params; ++k) {
             double scaled_c = C[k] * SCALE;
             scaled_c = std::max(-2147483600.0, std::min(2147483600.0, scaled_c));
-            curr_res.parameters.push_back(static_cast<int32_t>(std::round(scaled_c)));
+            curr_res_parameters.push_back(static_cast<int32_t>(std::round(scaled_c)));
         }
         
         for (int y = 0; y < h; ++y) {
@@ -138,7 +140,7 @@ void PolynomialPredictor::encode(const partition::BlockView& block, PredictionRe
                 int64_t p_val = 0;
                 for (int k = 0; k < k_params; ++k) {
                     int64_t term = compute_term(k, u, v);
-                    int64_t c_fixed = curr_res.parameters[k + 1];
+                    int64_t c_fixed = curr_res_parameters[k + 1];
                     
                     int64_t denom = SCALE;
                     for (int i = 0; i < U_DEG[k]; ++i) denom *= u_scale;
@@ -147,47 +149,49 @@ void PolynomialPredictor::encode(const partition::BlockView& block, PredictionRe
                     p_val += (c_fixed * term) / denom;
                 }
                 
-                curr_res.residuals.push_back(row[x] - static_cast<int32_t>(p_val));
+                curr_res_residuals.push_back(row[x] - static_cast<int32_t>(p_val));
             }
         }
         
-        double entropy = analyzer::calculate_entropy(curr_res.residuals);
-        double cost = entropy * num_samples + curr_res.parameters.size() * 32.0;
+        double entropy = analyzer::calculate_entropy(curr_res_residuals);
+        double cost = entropy * num_samples + curr_res_parameters.size() * 32.0;
         
         if (cost < best_cost) {
             best_cost = cost;
-            best_res = std::move(curr_res);
+            best_res_residuals = std::move(curr_res_residuals);
+            best_res_parameters = std::move(curr_res_parameters);
         }
     }
     
     if (best_cost == std::numeric_limits<double>::infinity()) {
         // Fallback to order 1 with 0 parameters if solving failed completely
-        best_res.parameters = {1, 0, 0, 0};
-        best_res.residuals.assign(num_samples, 0);
+        best_res_parameters = {1, 0, 0, 0};
+        best_res_residuals.assign(num_samples, 0);
         for (int y = 0; y < h; ++y) {
             const int32_t* row = block.row_data(y);
             for (int x = 0; x < w; ++x) {
-                best_res.residuals[y * w + x] = row[x];
+                best_res_residuals[y * w + x] = row[x];
             }
         }
     }
     
-    result = std::move(best_res);
+    residuals = std::move(best_res_residuals);
+    parameters = std::move(best_res_parameters);
 }
 
-void PolynomialPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
-    if (encoded.parameters.empty()) {
+void PolynomialPredictor::decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& parameters, partition::MutableBlockView& block) const {
+    if (parameters.empty()) {
         throw std::runtime_error("Corrupt XTM: Polynomial predictor missing order parameter");
     }
     
-    int order = encoded.parameters[0];
+    int order = parameters[0];
     int k_params = 0;
     if (order == 1) k_params = 3;
     else if (order == 2) k_params = 6;
     else if (order == 3) k_params = 10;
     else throw std::runtime_error("Corrupt XTM: Invalid polynomial order");
     
-    if (encoded.parameters.size() < static_cast<size_t>(k_params + 1)) {
+    if (parameters.size() < static_cast<size_t>(k_params + 1)) {
         throw std::runtime_error("Corrupt XTM: Polynomial predictor missing coefficients");
     }
     
@@ -207,7 +211,7 @@ void PolynomialPredictor::decode(const PredictionResult& encoded, partition::Mut
             int64_t p_val = 0;
             for (int k = 0; k < k_params; ++k) {
                 int64_t term = compute_term(k, u, v);
-                int64_t c_fixed = encoded.parameters[k + 1];
+                int64_t c_fixed = parameters[k + 1];
                 
                 int64_t denom = SCALE;
                 for (int d = 0; d < U_DEG[k]; ++d) denom *= u_scale;
@@ -216,7 +220,7 @@ void PolynomialPredictor::decode(const PredictionResult& encoded, partition::Mut
                 p_val += (c_fixed * term) / denom;
             }
             
-            row[x] = encoded.residuals[i++] + static_cast<int32_t>(p_val);
+            row[x] = residuals[i++] + static_cast<int32_t>(p_val);
         }
     }
 }

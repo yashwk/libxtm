@@ -2,10 +2,10 @@
 
 namespace xtm::predictor {
 
-void GradientPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
-    result.residuals.clear();
-    result.parameters.clear();
-    result.residuals.reserve(block.width * block.height);
+void GradientPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
+    residuals.clear();
+    parameters.clear();
+    residuals.reserve(block.width * block.height);
     
     for (std::uint32_t y = 0; y < block.height; ++y) {
         const int32_t* row = block.row_data(y);
@@ -20,13 +20,13 @@ void GradientPredictor::encode(const partition::BlockView& block, PredictionResu
                 int32_t C = (block.global_x(x) > 0) ? block.get_global(block.global_x(x) - 1, block.global_y(y)) : 0;
                 P = B + C - A;
             }
-            result.residuals.push_back(row[x] - P);
+            residuals.push_back(row[x] - P);
         }
     }
     return;
 }
 
-void GradientPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
+void GradientPredictor::decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& /*parameters*/, partition::MutableBlockView& block) const {
     size_t i = 0;
     for (std::uint32_t y = 0; y < block.height; ++y) {
         int32_t* row = block.row_data(y);
@@ -41,7 +41,7 @@ void GradientPredictor::decode(const PredictionResult& encoded, partition::Mutab
                 int32_t C = (block.global_x(x) > 0) ? block.get_global(block.global_x(x) - 1, block.global_y(y)) : 0;
                 P = B + C - A;
             }
-            row[x] = encoded.residuals[i++] + P;
+            row[x] = residuals[i++] + P;
         }
     }
 }

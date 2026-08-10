@@ -16,7 +16,18 @@ struct IntGrid {
     }
 };
 
-IntGrid quantize(const TerrainView& view, double scale = 1.0);
-TerrainBuffer dequantize(const IntGrid& grid, double scale = 1.0, std::optional<double> nodata_value = std::nullopt, GeoTransform transform = {});
+// Elementwise quantization without inpainting; nodata cells get value 0 + mask=1.
+IntGrid quantize_pixels(const TerrainView& view, double precision = 1.0);
+
+// Fill nodata cells from filled neighbors (iterative ring inpainting; data
+// values are filled but nodata_mask entries stay set).
+void inpaint(IntGrid& grid);
+
+IntGrid quantize(const TerrainView& view, double precision = 1.0);
+TerrainBuffer dequantize(const IntGrid& grid, double precision = 1.0, std::optional<double> nodata_value = std::nullopt, GeoTransform transform = {});
+
+// Dequantize rows [y0, y0+nrows) into a caller-owned row-major buffer of nrows*width doubles.
+void dequantize_rows(const IntGrid& grid, std::uint32_t y0, std::uint32_t nrows,
+                     double precision, std::optional<double> nodata_value, double* out);
 
 } // namespace xtm::terrain

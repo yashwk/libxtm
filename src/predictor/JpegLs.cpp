@@ -14,10 +14,10 @@ inline int32_t jpegls_predict(int32_t A, int32_t B, int32_t C) {
 }
 } // namespace
 
-void JpegLsPredictor::encode(const partition::BlockView& block, PredictionResult& result) const {
-    result.residuals.clear();
-    result.parameters.clear();
-    result.residuals.reserve(block.width * block.height);
+void JpegLsPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
+    residuals.clear();
+    parameters.clear();
+    residuals.reserve(block.width * block.height);
     
     for (std::uint32_t y = 0; y < block.height; ++y) {
         const int32_t* row = block.row_data(y);
@@ -32,13 +32,13 @@ void JpegLsPredictor::encode(const partition::BlockView& block, PredictionResult
                 int32_t C = (block.global_x(x) > 0) ? block.get_global(block.global_x(x) - 1, block.global_y(y)) : 0;
                 P = jpegls_predict(A, B, C);
             }
-            result.residuals.push_back(row[x] - P);
+            residuals.push_back(row[x] - P);
         }
     }
     return;
 }
 
-void JpegLsPredictor::decode(const PredictionResult& encoded, partition::MutableBlockView& block) const {
+void JpegLsPredictor::decode(const std::vector<int32_t>& residuals, const std::vector<int32_t>& /*parameters*/, partition::MutableBlockView& block) const {
     size_t i = 0;
     for (std::uint32_t y = 0; y < block.height; ++y) {
         int32_t* row = block.row_data(y);
@@ -53,7 +53,7 @@ void JpegLsPredictor::decode(const PredictionResult& encoded, partition::Mutable
                 int32_t C = (block.global_x(x) > 0) ? block.get_global(block.global_x(x) - 1, block.global_y(y)) : 0;
                 P = jpegls_predict(A, B, C);
             }
-            row[x] = encoded.residuals[i++] + P;
+            row[x] = residuals[i++] + P;
         }
     }
 }

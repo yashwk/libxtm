@@ -47,28 +47,25 @@ protected:
         return (std::filesystem::path(temp_dir_) / name).string();
     }
 
-    coding::EncodeResult roundtrip_grid(terrain::IntGrid& grid, float scale, coding::ContextModel model, uint32_t threads = 0, analyzer::PipelineType pipeline = analyzer::PipelineType::Predictor) {
+    coding::EncodeResult roundtrip_grid(terrain::IntGrid& grid, float precision, coding::ContextModel model, uint32_t threads = 0, analyzer::PipelineType pipeline = analyzer::PipelineType::Predictor) {
         const testing::TestInfo* const test_info = testing::UnitTest::GetInstance()->current_test_info();
         std::string test_name = test_info ? test_info->name() : "unknown";
         std::string temp_path = get_temp_file(test_name + ".xtm");
         
-        coding::Options options;
-        options.scale = scale;
-        options.context_model = model;
-        options.num_threads = threads;
-        options.pipeline_type = pipeline;
+        coding::PipelineContext ctx(precision, model, pipeline);
+        ctx.num_threads = threads;
         
         container::XtmHeader header;
         header.grid_width = grid.width;
         header.grid_height = grid.height;
-        header.scale = options.scale;
-        header.context_model = static_cast<uint8_t>(options.context_model);
-        header.pipeline_id = (options.pipeline_type == analyzer::PipelineType::Wavelet) ? container::XtmHeader::PIPELINE_WAVELET : container::XtmHeader::PIPELINE_PREDICTOR;
+        header.precision = ctx.precision;
+        header.context_model = static_cast<uint8_t>(ctx.context_model);
+        header.pipeline_id = (ctx.pipeline_type == analyzer::PipelineType::Wavelet) ? container::XtmHeader::PIPELINE_WAVELET : container::XtmHeader::PIPELINE_PREDICTOR;
         
         coding::EncodeResult res;
         {
             container::XtmWriter writer(temp_path, header);
-            res = coding::XtmEncoder::encode(grid, writer, options);
+            res = coding::XtmEncoder::encode(grid, writer, ctx);
         }
         
         terrain::IntGrid decoded;
@@ -78,7 +75,7 @@ protected:
         decoded.nodata_mask.resize(grid.width * grid.height, false);
         {
             container::XtmReader reader(temp_path);
-            coding::XtmDecoder::decode(reader, decoded, 0, 0, grid.width, grid.height, options.num_threads);
+            coding::XtmDecoder::decode(reader, decoded, 0, 0, grid.width, grid.height, ctx.num_threads);
         }
         
         EXPECT_EQ(decoded.width, grid.width);
@@ -186,16 +183,16 @@ TEST_F(CodecRoundTripTest, ThreadDeterminism) {
     std::mt19937 rng(1337); std::uniform_int_distribution<int32_t> dist(-1000, 1000);
     for (auto& v : grid.data) v = dist(rng);
     
-    coding::Options options; options.context_model = coding::ContextModel::Extended;
-    container::XtmHeader header; header.grid_width = W; header.grid_height = H; header.scale = 1.0f; header.context_model = 1;
+    coding::PipelineContext ctx(1.0f, coding::ContextModel::Extended, analyzer::PipelineType::Predictor);
+    container::XtmHeader header; header.grid_width = W; header.grid_height = H; header.precision = 1.0f; header.context_model = 1;
     
     std::string path1 = get_temp_file("xtm_test_det1.xtm");
     std::string path2 = get_temp_file("xtm_test_det2.xtm");
     
-    options.num_threads = 1;
-    { container::XtmWriter writer(path1, header); coding::XtmEncoder::encode(grid, writer, options); }
-    options.num_threads = 4;
-    { container::XtmWriter writer(path2, header); coding::XtmEncoder::encode(grid, writer, options); }
+    ctx.num_threads = 1;
+    { container::XtmWriter writer(path1, header); coding::XtmEncoder::encode(grid, writer, ctx); }
+    ctx.num_threads = 4;
+    { container::XtmWriter writer(path2, header); coding::XtmEncoder::encode(grid, writer, ctx); }
     
     auto bytes1 = read_all_bytes(path1);
     auto bytes2 = read_all_bytes(path2);
@@ -213,11 +210,11 @@ TEST_F(CodecRoundTripTest, RoiCropMatchesFullDecode) {
     for (auto& v : grid.data) v = dist(rng);
     
     std::string temp_path = get_temp_file("xtm_test_roi.xtm");
-    coding::Options options; options.context_model = coding::ContextModel::Extended;
-    container::XtmHeader header; header.grid_width = W; header.grid_height = H; header.scale = 1.0f; header.context_model = 1;
+    coding::PipelineContext ctx(1.0f, coding::ContextModel::Extended, analyzer::PipelineType::Predictor);
+    container::XtmHeader header; header.grid_width = W; header.grid_height = H; header.precision = 1.0f; header.context_model = 1;
     {
         container::XtmWriter writer(temp_path, header);
-        coding::XtmEncoder::encode(grid, writer, options);
+        coding::XtmEncoder::encode(grid, writer, ctx);
     }
     
     terrain::IntGrid full_decoded;
@@ -227,7 +224,7 @@ TEST_F(CodecRoundTripTest, RoiCropMatchesFullDecode) {
     full_decoded.nodata_mask.resize(W * H, false);
     {
         container::XtmReader reader(temp_path);
-        coding::XtmDecoder::decode(reader, full_decoded, 0, 0, W, H, options.num_threads);
+        coding::XtmDecoder::decode(reader, full_decoded, 0, 0, W, H, ctx.num_threads);
     }
     
     terrain::IntGrid roi_decoded;
@@ -238,7 +235,7 @@ TEST_F(CodecRoundTripTest, RoiCropMatchesFullDecode) {
     roi_decoded.nodata_mask.resize(rw * rh, false);
     {
         container::XtmReader reader(temp_path);
-        coding::XtmDecoder::decode(reader, roi_decoded, rx, ry, rw, rh, options.num_threads);
+        coding::XtmDecoder::decode(reader, roi_decoded, rx, ry, rw, rh, ctx.num_threads);
     }
     
     EXPECT_EQ(roi_decoded.width, rw);

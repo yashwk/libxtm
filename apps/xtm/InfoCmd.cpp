@@ -33,7 +33,7 @@ int run_info(int argc, char** argv) {
         std::cout << "Origin: [" << header.transform.origin_x << ", " << header.transform.origin_y << "]\n";
         std::cout << "Grid: " << header.grid_width << "x" << header.grid_height << "\n";
         std::cout << "Pixel Size: " << header.transform.pixel_width << " x " << header.transform.pixel_height << "\n";
-        std::cout << "Quantization Scale: " << header.scale << "\n";
+        std::cout << "Quantization Precision: " << header.precision << "\n";
         std::cout << "Index Offset: " << header.index_offset << "\n";
         
         const auto& index = reader.get_index();

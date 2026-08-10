@@ -69,8 +69,10 @@ struct EncodingContext {
     }
 };
 
-void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, class ArithmeticEncoder& ac, EncodingContext& ctx);
-void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, class ArithmeticDecoder& ad, EncodingContext& ctx);
-void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, ContextModel model, bool has_precision, std::vector<int32_t>& mag_classes, std::vector<int32_t>& run_lengths, std::unordered_map<Context, uint32_t>& context_sizes, uint32_t& remainder_bits);
+struct PipelineContext;
+
+void encode_stream(const std::vector<int32_t>& data, uint32_t width, uint32_t height, const PipelineContext& pctx, class ArithmeticEncoder& ac, EncodingContext& ectx);
+void decode_stream(std::vector<int32_t>& data, uint32_t width, uint32_t height, const PipelineContext& pctx, class ArithmeticDecoder& ad, EncodingContext& ectx);
+void analyze_symbols(const std::vector<int32_t>& data, uint32_t width, uint32_t height, const PipelineContext& pctx, std::vector<int32_t>& mag_classes, std::vector<int32_t>& run_lengths, std::unordered_map<Context, uint32_t>& context_sizes, uint32_t& remainder_bits);
 
 } // namespace xtm::coding

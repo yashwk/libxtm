@@ -35,7 +35,7 @@ void XtmHeader::write(std::ostream& os) const {
     
     os.write(reinterpret_cast<const char*>(&grid_width), sizeof(grid_width));
     os.write(reinterpret_cast<const char*>(&grid_height), sizeof(grid_height));
-    os.write(reinterpret_cast<const char*>(&scale), sizeof(scale));
+    os.write(reinterpret_cast<const char*>(&precision), sizeof(precision));
     os.write(reinterpret_cast<const char*>(&context_model), sizeof(context_model));
     os.write(reinterpret_cast<const char*>(&index_offset), sizeof(index_offset));
     
@@ -76,7 +76,7 @@ void XtmHeader::read(std::istream& is) {
     
     is.read(reinterpret_cast<char*>(&grid_width), sizeof(grid_width));
     is.read(reinterpret_cast<char*>(&grid_height), sizeof(grid_height));
-    is.read(reinterpret_cast<char*>(&scale), sizeof(scale));
+    is.read(reinterpret_cast<char*>(&precision), sizeof(precision));
     is.read(reinterpret_cast<char*>(&context_model), sizeof(context_model));
     if (context_model > 1) {
         throw std::runtime_error("Corrupt XTM: invalid context model " + std::to_string(context_model));

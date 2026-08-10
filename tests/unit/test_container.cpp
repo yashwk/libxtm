@@ -44,7 +44,7 @@ TEST_F(ContainerTest, RoundtripWriterReader) {
     header.wkt_projection = "PROJCS[\"WGS 84 / Pseudo-Mercator\"]";
     header.grid_width = 1024;
     header.grid_height = 1024;
-    header.scale = 0.5;
+    header.precision = 0.5;
     header.context_model = 1;
     
     {
@@ -53,8 +53,13 @@ TEST_F(ContainerTest, RoundtripWriterReader) {
         std::vector<uint8_t> block1 = {0xAA, 0xBB, 0xCC};
         std::vector<uint8_t> block2 = {0x11, 0x22, 0x33, 0x44};
         
-        writer.write_block(0, 0, 512, 512, block1);
-        writer.write_block(512, 0, 512, 512, block2);
+        XtmWriter::PendingBlock pb1;
+        pb1.x = 0; pb1.y = 0; pb1.width = 512; pb1.height = 512; pb1.bitstream = block1;
+        
+        XtmWriter::PendingBlock pb2;
+        pb2.x = 512; pb2.y = 0; pb2.width = 512; pb2.height = 512; pb2.bitstream = block2;
+
+        writer.write_superblock(0, {pb1, pb2});
         
         writer.finalize();
     }
@@ -65,7 +70,7 @@ TEST_F(ContainerTest, RoundtripWriterReader) {
         const auto& h = reader.get_header();
         EXPECT_EQ(h.wkt_projection, "PROJCS[\"WGS 84 / Pseudo-Mercator\"]");
         EXPECT_EQ(h.grid_width, 1024u);
-        EXPECT_EQ(h.scale, 0.5);
+        EXPECT_EQ(h.precision, 0.5);
         EXPECT_EQ(h.context_model, 1u);
         
         const auto& index = reader.get_index();
@@ -133,7 +138,9 @@ TEST_F(ContainerTest, RejectsBlockRegionBeyondFile) {
     std::string test_file = get_temp_file("test_bad_block.xtm");
     {
         XtmWriter writer(test_file, XtmHeader{});
-        writer.write_block(0, 0, 64, 64, {0xDE, 0xAD, 0xBE, 0xEF});
+        XtmWriter::PendingBlock pb;
+        pb.x = 0; pb.y = 0; pb.width = 64; pb.height = 64; pb.bitstream = {0xDE, 0xAD, 0xBE, 0xEF};
+        writer.write_superblock(0, {pb});
         writer.finalize();
     }
     {
@@ -164,7 +171,9 @@ TEST_F(ContainerTest, RejectsZeroLengthBlockRegionOutsideFile) {
     std::string test_file = get_temp_file("test_bad_block2.xtm");
     {
         XtmWriter writer(test_file, XtmHeader{});
-        writer.write_block(0, 0, 64, 64, {0xAA});
+        XtmWriter::PendingBlock pb;
+        pb.x = 0; pb.y = 0; pb.width = 64; pb.height = 64; pb.bitstream = {0xAA};
+        writer.write_superblock(0, {pb});
         writer.finalize();
     }
     {
@@ -184,18 +193,23 @@ TEST_F(ContainerTest, OutputIsDeterministicAcrossWriteOrder) {
     std::vector<uint8_t> block2 = {0x11, 0x22, 0x33, 0x44};
     std::vector<uint8_t> block3 = {0xDE, 0xAD, 0xBE, 0xEF};
 
+    XtmWriter::PendingBlock pb1, pb2, pb3;
+    pb1.x = 0; pb1.y = 0; pb1.width = 64; pb1.height = 64; pb1.bitstream = block1; pb1.sequence_id = 1;
+    pb2.x = 0; pb2.y = 64; pb2.width = 64; pb2.height = 64; pb2.bitstream = block2; pb2.sequence_id = 2;
+    pb3.x = 64; pb3.y = 0; pb3.width = 64; pb3.height = 64; pb3.bitstream = block3; pb3.sequence_id = 3;
+
     {
         XtmWriter writer(file_a, XtmHeader{});
-        writer.write_block(0, 0, 64, 64, block1, 1);
-        writer.write_block(0, 64, 64, 64, block2, 2);
-        writer.write_block(64, 0, 64, 64, block3, 3);
+        writer.write_superblock(0, {pb1});
+        writer.write_superblock(1, {pb2});
+        writer.write_superblock(2, {pb3});
         writer.finalize();
     }
     {
         XtmWriter writer(file_b, XtmHeader{});
-        writer.write_block(64, 0, 64, 64, block3, 3);
-        writer.write_block(0, 64, 64, 64, block2, 2);
-        writer.write_block(0, 0, 64, 64, block1, 1);
+        writer.write_superblock(2, {pb3});
+        writer.write_superblock(1, {pb2});
+        writer.write_superblock(0, {pb1});
         writer.finalize();
     }
 

@@ -1,7 +1,7 @@
 #pragma once
 #include "xtm/terrain/Quantization.hpp"
 #include "xtm/container/IO.hpp"
-#include "xtm/coding/Options.hpp"
+#include "xtm/coding/PipelineContext.hpp"
 #include <map>
 #include <cstdint>
 
@@ -24,7 +24,7 @@ class XtmEncoder {
 public:
     static EncodeResult encode(const terrain::IntGrid& grid,
                                container::XtmWriter& writer,
-                               const Options& options);
+                               const PipelineContext& ctx);
 };
 
 } // namespace xtm::coding

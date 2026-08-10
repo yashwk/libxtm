@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "xtm/coding/ContextModeler.hpp"
 #include "xtm/coding/RangeCoder.hpp"
+#include "xtm/coding/PipelineContext.hpp"
 
 using namespace xtm::coding;
 
@@ -12,7 +13,8 @@ TEST(ContextModelerTest, EncodeDecodeWithoutPrecision) {
     BitWriter bw;
     ArithmeticEncoder ac(bw);
     EncodingContext ctx;
-    encode_stream(data, width, height, ContextModel::Simple, false, ac, ctx);
+    PipelineContext pctx(1.0, ContextModel::Simple);
+    encode_stream(data, width, height, pctx, ac, ctx);
     ac.flush();
     bw.flush();
 
@@ -24,7 +26,7 @@ TEST(ContextModelerTest, EncodeDecodeWithoutPrecision) {
     EncodingContext dec_ctx;
     
     std::vector<int32_t> decoded_data(width * height, 0);
-    decode_stream(decoded_data, width, height, ContextModel::Simple, false, ad, dec_ctx);
+    decode_stream(decoded_data, width, height, pctx, ad, dec_ctx);
     
     EXPECT_EQ(data, decoded_data);
 }
@@ -42,7 +44,8 @@ TEST(ContextModelerTest, EncodeDecodeWithPrecision) {
     BitWriter bw;
     ArithmeticEncoder ac(bw);
     EncodingContext ctx;
-    encode_stream(data, width, height, ContextModel::Simple, true, ac, ctx);
+    PipelineContext pctx(0.1, ContextModel::Simple);
+    encode_stream(data, width, height, pctx, ac, ctx);
     ac.flush();
     bw.flush();
 
@@ -54,7 +57,7 @@ TEST(ContextModelerTest, EncodeDecodeWithPrecision) {
     EncodingContext dec_ctx;
     
     std::vector<int32_t> decoded_data(width * height * 2, 0);
-    decode_stream(decoded_data, width, height, ContextModel::Simple, true, ad, dec_ctx);
+    decode_stream(decoded_data, width, height, pctx, ad, dec_ctx);
     
     EXPECT_EQ(data, decoded_data);
 }

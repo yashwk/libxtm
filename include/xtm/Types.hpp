@@ -4,12 +4,12 @@
 namespace xtm {
 
 struct GeoTransform {
-    double origin_x;
-    double pixel_width;
-    double rotation_x;
-    double origin_y;
-    double rotation_y;
-    double pixel_height;
+    double origin_x = 0.0;
+    double pixel_width = 1.0;
+    double rotation_x = 0.0;
+    double origin_y = 0.0;
+    double rotation_y = 0.0;
+    double pixel_height = 1.0;
 };
 
 } // namespace xtm
