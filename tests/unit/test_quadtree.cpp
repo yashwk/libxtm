@@ -15,9 +15,11 @@ public:
     void encode(const BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& /*parameters*/) const override {
         residuals.resize(block.width * block.height);
         if (block.width == 64) {
-            // Force high entropy for 64x64 so it splits
+            // Force high entropy for 64x64 so it splits. Must be unpredictable
+            // noise: a deterministic ramp would be flattened by the second-order
+            // residual pool (e.g. residual-Left turns it into near-constant 1s).
             for (uint32_t i = 0; i < block.width * block.height; ++i) {
-                residuals[i] = (i % 256) - 128; // high enough variance to cost > 1 bit/px
+                residuals[i] = static_cast<int32_t>(((i * 1103515245u + 12345u) & 0x7FFFFFFFu) % 256) - 128;
             }
         } else {
             // Force 0 entropy for 32x32 so it prefers the split

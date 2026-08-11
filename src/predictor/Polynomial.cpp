@@ -57,13 +57,6 @@ namespace {
     constexpr int U_DEG[10] = {0, 1, 0, 2, 1, 0, 3, 2, 1, 0};
     constexpr int V_DEG[10] = {0, 0, 1, 0, 1, 2, 0, 1, 2, 3};
     constexpr int64_t SCALE = 16384;
-
-    int64_t compute_term(int k, int64_t u, int64_t v) {
-        int64_t res = 1;
-        for (int i = 0; i < U_DEG[k]; ++i) res *= u;
-        for (int i = 0; i < V_DEG[k]; ++i) res *= v;
-        return res;
-    }
 }
 
 void PolynomialPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
@@ -131,22 +124,27 @@ void PolynomialPredictor::encode(const partition::BlockView& block, std::vector<
             curr_res_parameters.push_back(static_cast<int32_t>(std::round(scaled_c)));
         }
         
+        // Fixed-point denominators depend only on the coefficient index k;
+        // hoist them out of the per-pixel loop.
+        int64_t denoms[10];
+        for (int k = 0; k < k_params; ++k) {
+            int64_t denom = SCALE;
+            for (int i = 0; i < U_DEG[k]; ++i) denom *= u_scale;
+            for (int i = 0; i < V_DEG[k]; ++i) denom *= v_scale;
+            denoms[k] = denom;
+        }
+        
         for (int y = 0; y < h; ++y) {
             const int32_t* row = block.row_data(y);
             int64_t v = 2 * (int64_t)y - (h - 1);
+            int64_t v_pow[4] = {1, v, v * v, v * v * v};
             for (int x = 0; x < w; ++x) {
                 int64_t u = 2 * (int64_t)x - (w - 1);
+                int64_t u_pow[4] = {1, u, u * u, u * u * u};
                 
                 int64_t p_val = 0;
                 for (int k = 0; k < k_params; ++k) {
-                    int64_t term = compute_term(k, u, v);
-                    int64_t c_fixed = curr_res_parameters[k + 1];
-                    
-                    int64_t denom = SCALE;
-                    for (int i = 0; i < U_DEG[k]; ++i) denom *= u_scale;
-                    for (int i = 0; i < V_DEG[k]; ++i) denom *= v_scale;
-                    
-                    p_val += (c_fixed * term) / denom;
+                    p_val += (curr_res_parameters[k + 1] * (u_pow[U_DEG[k]] * v_pow[V_DEG[k]])) / denoms[k];
                 }
                 
                 curr_res_residuals.push_back(row[x] - static_cast<int32_t>(p_val));
@@ -202,22 +200,25 @@ void PolynomialPredictor::decode(const std::vector<int32_t>& residuals, const st
     int64_t u_scale = std::max(1, w - 1);
     int64_t v_scale = std::max(1, h - 1);
     
+    int64_t denoms[10];
+    for (int k = 0; k < k_params; ++k) {
+        int64_t denom = SCALE;
+        for (int d = 0; d < U_DEG[k]; ++d) denom *= u_scale;
+        for (int d = 0; d < V_DEG[k]; ++d) denom *= v_scale;
+        denoms[k] = denom;
+    }
+    
     for (int y = 0; y < h; ++y) {
         int32_t* row = block.row_data(y);
         int64_t v = 2 * (int64_t)y - (h - 1);
+        int64_t v_pow[4] = {1, v, v * v, v * v * v};
         for (int x = 0; x < w; ++x) {
             int64_t u = 2 * (int64_t)x - (w - 1);
+            int64_t u_pow[4] = {1, u, u * u, u * u * u};
             
             int64_t p_val = 0;
             for (int k = 0; k < k_params; ++k) {
-                int64_t term = compute_term(k, u, v);
-                int64_t c_fixed = parameters[k + 1];
-                
-                int64_t denom = SCALE;
-                for (int d = 0; d < U_DEG[k]; ++d) denom *= u_scale;
-                for (int d = 0; d < V_DEG[k]; ++d) denom *= v_scale;
-                
-                p_val += (c_fixed * term) / denom;
+                p_val += (parameters[k + 1] * (u_pow[U_DEG[k]] * v_pow[V_DEG[k]])) / denoms[k];
             }
             
             row[x] = residuals[i++] + static_cast<int32_t>(p_val);

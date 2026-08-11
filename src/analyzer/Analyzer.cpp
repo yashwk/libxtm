@@ -79,6 +79,8 @@ void compute_correlation(const int32_t* data, std::uint32_t width, std::uint32_t
 struct SuperblockStats {
     std::size_t blocks = 0;
     std::size_t sec_blocks = 0;
+    std::size_t resid_pool[7] = {0, 0, 0, 0, 0, 0, 0};
+    double resid_savings = 0.0;
     double quad_bits = 0.0;         // partitioner total (includes leaf selection costs)
     double structure_bits = 0.0;    // quad_bits minus the leaf selection costs
 
@@ -208,7 +210,7 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
                 static_cast<std::size_t>(num_planes));
             for (std::size_t i = 0; i < grid.data.size(); ++i) {
                 if (has_mask && grid.nodata_mask[i]) continue;
-                std::uint32_t tmp = static_cast<std::uint32_t>(std::abs(grid.data[i]));
+                std::uint32_t tmp = xtm::coding::safe_abs(grid.data[i]);
                 for (int k = 0; k < num_planes; ++k) {
                     bins[static_cast<std::size_t>(k)][tmp % 10]++;
                     tmp /= 10;
@@ -233,6 +235,11 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
     std::vector<const predictor::Predictor*> predictors_list = bank.ordered();
     PredictorSelector global_selector(predictors_list, ctx);
 
+    // Per-plane estimate context: whole-superblock and wavelet coefficient
+    // streams are never split, unlike the concatenated winner residuals.
+    coding::PipelineContext plane_ctx = ctx;
+    plane_ctx.has_precision = false;
+
     const std::uint32_t sb_size = 512;
     const std::uint32_t grid_sb_x = (grid.width + sb_size - 1) / sb_size;
     const std::uint32_t grid_sb_y = (grid.height + sb_size - 1) / sb_size;
@@ -252,17 +259,21 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
                 leaf_cost_sum += sel.total_bits;
                 if (sel.best_predictor) {
                     s.usage[predictor_index(sel.best_predictor)]++;
-                    if (sel.use_second_order) s.sec_blocks++;
+                    if (sel.use_second_order) {
+                        s.sec_blocks++;
+                        s.resid_pool[static_cast<std::size_t>(sel.residual_predictor_id)]++;
+                        s.resid_savings += sel.second_order_bits_savings;
+                    }
                 }
 
                 double mag = 0.0, run = 0.0, rem = 0.0;
-                estimate_shannon_bits(sel.best_residuals, &mag, &run, &rem);
+                estimate_shannon_bits(sel.best_residuals, &ctx, leaf.block.width, leaf.block.height, &mag, &run, &rem);
                 s.mag_bits += mag;
                 s.run_bits += run;
                 s.rem_bits += rem;
                 s.param_bits += static_cast<double>(sel.best_parameters.size()) * 32.0;
                 s.winner_est_bits += mag + run + rem;
-                for (int32_t r : sel.best_residuals) s.winner_abs_sum += std::abs(r);
+                for (int32_t r : sel.best_residuals) s.winner_abs_sum += xtm::coding::safe_abs(r);
 
                 switch (leaf.block.width) {
                     case 512: s.leaf512++; break;
@@ -284,7 +295,7 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
                     if (levels > 0) {
                         transform::CDF53Transform::forward_2d(wv, w, h, levels);
                     }
-                    s.wv_est_bits += estimate_shannon_bits(wv);
+                    s.wv_est_bits += estimate_shannon_bits(wv, &plane_ctx, w, h);
                 }
             }
             s.structure_bits = quad_bits - leaf_cost_sum;
@@ -299,10 +310,10 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
                 scratch_param.clear();
                 predictors_list[i]->encode(full_sb, scratch_res, scratch_param);
                 s.sel_bits[i] += 8.0 + static_cast<double>(scratch_param.size()) * 32.0
-                               + estimate_shannon_bits(scratch_res);
+                               + estimate_shannon_bits(scratch_res, &plane_ctx, sgrid.width, sgrid.height);
                 s.shannon_bits[i] += shannon_bits_of(scratch_res, entropy_scratch)
                                    * static_cast<double>(scratch_res.size());
-                for (int32_t r : scratch_res) s.abs_sum[i] += std::abs(r);
+                for (int32_t r : scratch_res) s.abs_sum[i] += xtm::coding::safe_abs(r);
                 s.px[i] += scratch_res.size();
             }
         });
@@ -330,6 +341,10 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
         report.leaves_64 += s.leaf64;
         report.total_blocks += s.blocks;
         report.second_order_usage_pct += static_cast<double>(s.sec_blocks);
+        report.residual_pool_savings_bits += s.resid_savings;
+        for (std::size_t i = 0; i < 7; ++i) {
+            report.residual_predictor_blocks[i] += s.resid_pool[i];
+        }
     }
 
     report.budget.magnitude_class_bpp *= inv_n;
@@ -345,10 +360,14 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
     report.second_order_usage_pct = report.total_blocks > 0
         ? 100.0 * report.second_order_usage_pct / static_cast<double>(report.total_blocks)
         : 0.0;
+    report.second_order_savings_bpp = report.residual_pool_savings_bits * inv_n;
 
     const std::size_t block_index_bytes = report.total_blocks * 36u;
     report.estimated_file_bytes = report.budget.total_bpp * report.sample_count / 8.0
                                 + block_index_bytes + 256.0;
+    report.estimated_compression_ratio = report.estimated_file_bytes > 0
+        ? static_cast<double>(report.sample_count) * 4.0 / report.estimated_file_bytes
+        : 0.0;
 
     // ---- Predictor table ----
     for (std::size_t i = 0; i < predictors_list.size(); ++i) {

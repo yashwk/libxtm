@@ -7,6 +7,7 @@ namespace xtm::coding {
 class FrequencyTable {
 public:
     explicit FrequencyTable(uint32_t num_symbols);
+    explicit FrequencyTable(std::vector<uint32_t> initial_freqs);
     
     uint32_t get_total() const { return total_; }
     uint32_t get_low(uint32_t symbol) const { return cum_freq_[symbol]; }
@@ -19,6 +20,7 @@ public:
 private:
     std::vector<uint32_t> freqs_;
     std::vector<uint32_t> cum_freq_;
+    std::vector<uint32_t> initial_freqs_;
     uint32_t total_;
 };
 
@@ -48,10 +50,5 @@ private:
     uint32_t high_ = 0xFFFFFFFF;
     uint32_t code_ = 0;
 };
-
-// Encodes a full 32-bit unsigned value using Magnitude Class + Raw Bits.
-// Not thread-safe against concurrent use of the same table; tables are per-stream.
-void encode_value(ArithmeticEncoder& ac, FrequencyTable& freqs, uint32_t val);
-uint32_t decode_value(ArithmeticDecoder& ad, FrequencyTable& freqs);
 
 } // namespace xtm::coding

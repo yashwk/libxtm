@@ -1,6 +1,7 @@
 #include "xtm/terrain/Quantization.hpp"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace xtm::terrain {
 
@@ -21,7 +22,16 @@ IntGrid quantize_pixels(const TerrainView& view, double precision) {
                 grid.nodata_mask[idx] = 1;
                 grid.data[idx] = 0; // Temporary placeholder
             } else {
-                grid.data[idx] = static_cast<int32_t>(std::round(val * inv_scale));
+                double q = std::round(val * inv_scale);
+                if (!std::isfinite(q)) {
+                    // NaN/Inf values: deterministic placeholder instead of UB
+                    q = 0.0;
+                } else if (q >= 2147483647.0) {
+                    q = static_cast<double>(std::numeric_limits<int32_t>::max());
+                } else if (q <= -2147483648.0) {
+                    q = static_cast<double>(std::numeric_limits<int32_t>::lowest());
+                }
+                grid.data[idx] = static_cast<int32_t>(q);
             }
         }
     }

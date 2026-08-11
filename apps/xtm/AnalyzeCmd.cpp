@@ -107,6 +107,9 @@ int run_analyze(int argc, char** argv) {
         double mb = report.estimated_file_bytes / (1024.0 * 1024.0);
         std::cout << "Estimated file size:    " << std::setprecision(2) << mb
                   << " MB (incl. header + block index)\n";
+        std::cout << "Est. compression ratio: " << std::fixed << std::setprecision(2)
+                  << report.estimated_compression_ratio
+                  << ":1 vs raw Float32 (" << report.sample_count << " x 4 B)\n";
 
         if (report.precision_estimates.size() > 1) {
             std::cout << "\nPrecision options (re-running the encoder's selection on coarser grids):\n";
@@ -186,8 +189,18 @@ int run_analyze(int argc, char** argv) {
         }
         std::cout << "Encoder will choose: " << chosen_name << " (quadtree winner, used on "
                   << std::fixed << std::setprecision(1) << report.chosen_usage_pct << "% of blocks)\n";
-        std::cout << "Second-order pass:   triggered on " << std::setprecision(1)
-                  << report.second_order_usage_pct << "% of blocks\n";
+        std::cout << "\nResidual re-prediction (second-order pool on the meter residuals):\n";
+        std::cout << "  triggered on " << std::setprecision(1) << report.second_order_usage_pct
+                  << "% of blocks; est. savings "
+                  << std::setprecision(4) << report.second_order_savings_bpp << " bpp ("
+                  << std::setprecision(0) << report.residual_pool_savings_bits / 8.0 << " B)\n";
+        const char* resid_names[7] = {"None", "Average", "Median", "Left", "Gradient", "Gap", "LeastSq."};
+        std::cout << "  pool winners:  ";
+        for (std::size_t i = 1; i < 7; ++i) {
+            std::cout << resid_names[i] << " " << report.residual_predictor_blocks[i];
+            if (i < 6) std::cout << " | ";
+        }
+        std::cout << "\n";
 
         // ---- 4. Quadtree Analysis ----
         print_header("Quadtree Analysis");
@@ -230,7 +243,12 @@ int run_analyze(int argc, char** argv) {
         print_header("Summary");
         std::cout << "Estimated size at precision " << report.precision << ": "
                   << std::setprecision(2) << mb << " MB (" << std::setprecision(4)
-                  << report.budget.total_bpp << " bpp)\n";
+                  << report.budget.total_bpp << " bpp, ~"
+                  << std::fixed << std::setprecision(2) << report.estimated_compression_ratio
+                  << ":1 vs raw Float32)\n";
+        std::cout << "Residual re-prediction saves " << std::setprecision(4)
+                  << report.second_order_savings_bpp << " bpp ("
+                  << std::setprecision(0) << report.residual_pool_savings_bits / 8.0 << " B)\n";
         std::cout << "Recommended precision: ";
         if (report.precision_estimates.size() > 1) {
             const auto& finest = report.precision_estimates[0];

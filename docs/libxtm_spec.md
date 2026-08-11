@@ -498,9 +498,7 @@ Approximates gaps between macro-features.
 Uses surrounding context to dynamically build a local least-squares linear predictor for localized gradients.
 
 ### Second-Order Residual Pass
-Instead of an independent second-order predictor, a universal second-order pass can be applied to the residuals produced by any primary predictor. It uses a gradient average of the residuals themselves:
-$$p = W/2 + N/2$$
-If this reduces entropy further, the encoder signals it via the highest bit (0x80) of the predictor ID byte.
+Instead of an independent second-order predictor, a universal second-order pass can be applied to the residuals produced by any primary predictor. The residuals are re-predicted by a **pool** of residual predictors — `Average (p = W/2 + N/2)`, `Median (W, N, NW)`, and the Left/Gradient/Gap/LeastSquares classes over a zero-bordered residual-plane view. The cheapest pair wins, signalled by a 3-bit `ResidualPredictorId` in the predictor byte; a 16-bit acceptance barrier compensates for run-table adaptation overhead the estimator cannot see.
 
 ---
 

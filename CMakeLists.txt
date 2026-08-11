@@ -1,4 +1,36 @@
 cmake_minimum_required(VERSION 3.20)
+
+# clang++ is the primary compiler; falls back to the platform default if absent
+if(NOT DEFINED CMAKE_CXX_COMPILER)
+    find_program(CLANG_CXX NAMES clang++)
+    if(CLANG_CXX)
+        set(CMAKE_CXX_COMPILER ${CLANG_CXX})
+    endif()
+endif()
+
+# clang toolchain: point at the real GCC install dir for libstdc++ headers/libs
+# (clang may pick an empty newer GCC dir when several versions are installed).
+# Must be set before project(): the compiler check inside project() links a
+# test program and would fail without these flags.
+if(CMAKE_CXX_COMPILER MATCHES "clang" OR CMAKE_CXX_COMPILER MATCHES "Clang")
+    find_program(GXX_CXX NAMES g++)
+    if(GXX_CXX)
+        execute_process(
+            COMMAND ${GXX_CXX} -print-file-name=libstdc++.so
+            OUTPUT_VARIABLE GCC_LIBSTDCXX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(GCC_LIBSTDCXX AND NOT GCC_LIBSTDCXX MATCHES "^libstdc")
+            get_filename_component(GCC_LIBSTDCXX_DIR "${GCC_LIBSTDCXX}" DIRECTORY)
+            message(STATUS "clang: using GCC install dir ${GCC_LIBSTDCXX_DIR} for libstdc++")
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --gcc-install-dir=${GCC_LIBSTDCXX_DIR}" CACHE STRING "Flags used by the CXX compiler" FORCE)
+            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L${GCC_LIBSTDCXX_DIR}" CACHE STRING "Flags used by the linker" FORCE)
+            set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -L${GCC_LIBSTDCXX_DIR}" CACHE STRING "Flags used by the linker" FORCE)
+        endif()
+    endif()
+endif()
+
 project(libxtm VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -17,6 +49,26 @@ if(CCACHE_PROGRAM)
     message(STATUS "Found ccache: ${CCACHE_PROGRAM}")
     set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
     set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+endif()
+
+# clang toolchain: point at the real GCC install dir for libstdc++ headers/libs
+# (clang may pick an empty newer GCC dir when several versions are installed).
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    find_program(GXX_CXX NAMES g++)
+    if(GXX_CXX)
+        execute_process(
+            COMMAND ${GXX_CXX} -print-file-name=libstdc++.so
+            OUTPUT_VARIABLE GCC_LIBSTDCXX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(GCC_LIBSTDCXX AND NOT GCC_LIBSTDCXX MATCHES "^libstdc")
+            get_filename_component(GCC_LIBSTDCXX_DIR "${GCC_LIBSTDCXX}" DIRECTORY)
+            message(STATUS "clang: using GCC install dir ${GCC_LIBSTDCXX_DIR} for libstdc++")
+            add_compile_options(--gcc-install-dir=${GCC_LIBSTDCXX_DIR})
+            add_link_options(-L${GCC_LIBSTDCXX_DIR})
+        endif()
+    endif()
 endif()
 
 # Enable Interprocedural Optimization (LTO) only for Release builds
@@ -62,8 +114,21 @@ if(MSVC)
     endif()
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+    # clang -Werror: googletest printer header trips -Wcharacter-conversion
+    # (char8_t). Suppressed after the -Wall/-Wextra groups so it takes effect.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-Wno-character-conversion)
+    endif()
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        add_compile_options(-O3 -march=native -mtune=native)
+        # Per-compiler SIMD/vectorization tuning. Both GCC and clang get the
+        # native ISA explicitly; compiler-specific flags go in their branch.
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            add_compile_options(-O3 -march=native -mtune=native -fvectorize)
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+            add_compile_options(-O3 -march=native -mtune=native -ftree-vectorize)
+        else()
+            add_compile_options(-O3 -march=native)
+        endif()
     elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
         add_compile_options(-O2 -march=native -fno-omit-frame-pointer)
     endif()

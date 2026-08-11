@@ -103,17 +103,6 @@ TEST_F(ContainerTest, RejectsBadMagic) {
     EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
 }
 
-TEST_F(ContainerTest, RejectsUnsupportedVersion) {
-    std::string test_file = get_temp_file("test_bad_version.xtm");
-    {
-        XtmHeader header;
-        header.version = 99;
-        std::ofstream os(test_file, std::ios::binary | std::ios::trunc);
-        header.write(os);
-    }
-    EXPECT_THROW(XtmReader reader(test_file), std::runtime_error);
-}
-
 TEST_F(ContainerTest, RejectsTruncatedHeader) {
     std::string test_file = get_temp_file("test_truncated.xtm");
     {

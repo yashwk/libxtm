@@ -9,7 +9,6 @@ namespace xtm::container {
 
 struct XtmHeader {
     char magic[4] = {'X', 'T', 'M', '\0'};
-    uint16_t version = 4; // v4 adds WKT projection string and full 6-parameter GeoTransform
     uint16_t flags = 0;
     
     static constexpr uint16_t FLAG_HAS_NODATA = 1 << 1;
@@ -49,7 +48,7 @@ struct BlockIndexEntry {
     uint32_t checksum = 0; // CRC32 of the bitstream
     
     void write(std::ostream& os) const;
-    void read(std::istream& is, uint16_t version);
+    void read(std::istream& is);
 };
 
 } // namespace xtm::container

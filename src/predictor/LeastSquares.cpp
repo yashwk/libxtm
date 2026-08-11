@@ -14,14 +14,13 @@ static double det3(double m[3][3]) {
 }
 
 void LeastSquaresPredictor::encode(const partition::BlockView& block, std::vector<int32_t>& residuals, std::vector<int32_t>& parameters) const {
-    residuals.clear();
+    residuals.assign(block.width * block.height, 0);
     parameters.clear();
-    residuals.reserve(block.width * block.height);
     
     // We will fit weights w1, w2, w3 for W, N, NW
     // P = w1*W + w2*N + w3*NW
     
-    double A[3][3] = {0};
+    double A[3][3] = {{0}};
     double B[3] = {0};
     
     for (uint32_t y = 1; y < block.height; ++y) {
@@ -74,28 +73,37 @@ void LeastSquaresPredictor::encode(const partition::BlockView& block, std::vecto
     
     parameters = {qw1, qw2, qw3};
     
-    for (uint32_t y = 0; y < block.height; ++y) {
+    // First row (y == 0): p = row[x - 1] (or 0 at x == 0).
+    residuals[0] = block.row_data(0)[0];
+    {
+        const int32_t* row = block.row_data(0);
+        for (uint32_t x = 1; x < block.width; ++x) {
+            residuals[x] = row[x] - row[x - 1];
+        }
+    }
+    
+    // First column (x == 0): p = above[0].
+    for (uint32_t y = 1; y < block.height; ++y) {
+        residuals[y * block.width] = block.row_data(y)[0] - block.row_data(y - 1)[0];
+    }
+    
+    // Interior: reads only original row/above data (no loop-carried
+    // dependency), vectorizer-friendly.
+    const uint32_t w = block.width;
+    const uint32_t h = block.height;
+    for (uint32_t y = 1; y < h; ++y) {
         const int32_t* row = block.row_data(y);
-        const int32_t* above = (y > 0) ? block.row_data(y - 1) : nullptr;
-        for (uint32_t x = 0; x < block.width; ++x) {
-            int32_t val = row[x];
-            int32_t p = 0;
-            
-            if (x == 0 && y == 0) {
-                p = 0;
-            } else if (y == 0) {
-                p = row[x - 1];
-            } else if (x == 0) {
-                p = above[0];
-            } else {
-                int32_t W = row[x - 1];
-                int32_t N = above[x];
-                int32_t NW = above[x - 1];
-                
-                p = (qw1 * W + qw2 * N + qw3 * NW) / 256;
-            }
-            
-            residuals.push_back(val - p);
+        const int32_t* above = block.row_data(y - 1);
+#if defined(__clang__)
+#pragma clang loop vectorize(enable)
+#else
+#pragma GCC ivdep
+#endif
+        for (uint32_t x = 1; x < w; ++x) {
+            int32_t W = row[x - 1];
+            int32_t N = above[x];
+            int32_t NW = above[x - 1];
+            residuals[y * w + x] = row[x] - ((qw1 * W + qw2 * N + qw3 * NW) / 256);
         }
     }
     

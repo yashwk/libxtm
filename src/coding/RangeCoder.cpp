@@ -1,23 +1,29 @@
 #include "xtm/coding/RangeCoder.hpp"
+#include <utility>
+#include <algorithm>
 
 namespace xtm::coding {
 
-FrequencyTable::FrequencyTable(uint32_t num_symbols) {
-    freqs_.resize(num_symbols, 1);
-    cum_freq_.resize(num_symbols + 1, 0);
-    total_ = num_symbols;
-    for (uint32_t i = 0; i < num_symbols; ++i) {
+FrequencyTable::FrequencyTable(uint32_t num_symbols)
+    : FrequencyTable(std::vector<uint32_t>(num_symbols, 1)) {}
+
+FrequencyTable::FrequencyTable(std::vector<uint32_t> initial_freqs)
+    : freqs_(std::move(initial_freqs)), initial_freqs_(freqs_) {
+    cum_freq_.resize(freqs_.size() + 1, 0);
+    total_ = 0;
+    for (uint32_t i = 0; i < freqs_.size(); ++i) {
         cum_freq_[i + 1] = cum_freq_[i] + freqs_[i];
+        total_ += freqs_[i];
     }
 }
 
 void FrequencyTable::reset() {
-    uint32_t num_symbols = freqs_.size();
-    std::fill(freqs_.begin(), freqs_.end(), 1);
+    freqs_ = initial_freqs_;
     std::fill(cum_freq_.begin(), cum_freq_.end(), 0);
-    total_ = num_symbols;
-    for (uint32_t i = 0; i < num_symbols; ++i) {
+    total_ = 0;
+    for (uint32_t i = 0; i < freqs_.size(); ++i) {
         cum_freq_[i + 1] = cum_freq_[i] + freqs_[i];
+        total_ += freqs_[i];
     }
 }
 
@@ -130,46 +136,6 @@ uint32_t ArithmeticDecoder::decode(FrequencyTable& freqs) {
     }
     
     return symbol;
-}
-
-// Magnitude class helper: Number of bits needed to represent val.
-static uint32_t get_magnitude_class(uint32_t val) {
-    if (val == 0) return 0;
-    return 32 - __builtin_clz(val);
-}
-
-void encode_value(ArithmeticEncoder& ac, FrequencyTable& freqs, uint32_t val) {
-    uint32_t mag = get_magnitude_class(val);
-    ac.encode(freqs, mag);
-    freqs.increment(mag);
-    
-    if (mag > 1) {
-        // Never mutated, so per-call instances stay identical on both sides
-        FrequencyTable uniform_bit(2); // 0 and 1 equally probable
-        uint32_t remainder = val & ((1u << (mag - 1)) - 1);
-        for (int i = mag - 2; i >= 0; --i) {
-            uint32_t bit = (remainder >> i) & 1;
-            ac.encode(uniform_bit, bit);
-        }
-    }
-}
-
-uint32_t decode_value(ArithmeticDecoder& ad, FrequencyTable& freqs) {
-    uint32_t mag = ad.decode(freqs);
-    freqs.increment(mag);
-    
-    if (mag == 0) return 0;
-    if (mag == 1) return 1;
-    
-    FrequencyTable uniform_bit(2);
-    uint32_t remainder = 0;
-    for (int i = mag - 2; i >= 0; --i) {
-        uint32_t bit = ad.decode(uniform_bit);
-        remainder = (remainder << 1) | bit;
-    }
-    
-    uint32_t val = (1u << (mag - 1)) | remainder;
-    return val;
 }
 
 } // namespace xtm::coding

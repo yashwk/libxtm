@@ -14,6 +14,7 @@
       "binaryDir": "${sourceDir}/build/dev",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "ENABLE_ASAN": "ON",
         "ENABLE_UBSAN": "ON"
@@ -27,6 +28,7 @@
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     }

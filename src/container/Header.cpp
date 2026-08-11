@@ -4,9 +4,6 @@
 namespace xtm::container {
 
 namespace {
-constexpr uint16_t SUPPORTED_VERSION_MIN = 4;
-constexpr uint16_t SUPPORTED_VERSION_MAX = 4;
-
 void check_stream(std::istream& is, const char* what) {
     if (!is) {
         throw std::runtime_error(std::string("Corrupt XTM: failed to read ") + what);
@@ -16,7 +13,6 @@ void check_stream(std::istream& is, const char* what) {
 
 void XtmHeader::write(std::ostream& os) const {
     os.write(magic, 4);
-    os.write(reinterpret_cast<const char*>(&version), sizeof(version));
     os.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
     os.write(reinterpret_cast<const char*>(&pipeline_id), sizeof(pipeline_id));
     
@@ -49,12 +45,6 @@ void XtmHeader::read(std::istream& is) {
     check_stream(is, "magic");
     if (magic[0] != 'X' || magic[1] != 'T' || magic[2] != 'M' || magic[3] != '\0') {
         throw std::runtime_error("Invalid XTM magic signature");
-    }
-    
-    is.read(reinterpret_cast<char*>(&version), sizeof(version));
-    check_stream(is, "version");
-    if (version < SUPPORTED_VERSION_MIN || version > SUPPORTED_VERSION_MAX) {
-        throw std::runtime_error("Unsupported XTM format version " + std::to_string(version));
     }
     
     is.read(reinterpret_cast<char*>(&flags), sizeof(flags));
@@ -101,18 +91,14 @@ void BlockIndexEntry::write(std::ostream& os) const {
     os.write(reinterpret_cast<const char*>(&checksum), sizeof(checksum));
 }
 
-void BlockIndexEntry::read(std::istream& is, uint16_t version) {
+void BlockIndexEntry::read(std::istream& is) {
     is.read(reinterpret_cast<char*>(&block_x), sizeof(block_x));
     is.read(reinterpret_cast<char*>(&block_y), sizeof(block_y));
     is.read(reinterpret_cast<char*>(&block_width), sizeof(block_width));
     is.read(reinterpret_cast<char*>(&block_height), sizeof(block_height));
     is.read(reinterpret_cast<char*>(&byte_offset), sizeof(byte_offset));
     is.read(reinterpret_cast<char*>(&byte_length), sizeof(byte_length));
-    if (version >= 3) {
-        is.read(reinterpret_cast<char*>(&checksum), sizeof(checksum));
-    } else {
-        checksum = 0;
-    }
+    is.read(reinterpret_cast<char*>(&checksum), sizeof(checksum));
     if (!is) {
         throw std::runtime_error("Corrupt XTM: failed to read block index entry");
     }

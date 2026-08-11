@@ -13,7 +13,7 @@ TEST(EntropyTest, ArithmeticEndToEnd) {
         if (rng() % 100 < 80) {
             original.push_back(rng() % 5); // 80% chance of 0-4
         } else {
-            original.push_back(rng() % 100000); // 20% chance of large number
+            original.push_back(5 + (rng() % 28)); // 20% chance of larger symbol
         }
     }
     
@@ -22,7 +22,8 @@ TEST(EntropyTest, ArithmeticEndToEnd) {
     FrequencyTable enc_freqs(33); // Mag classes 0 to 32
     
     for (uint32_t val : original) {
-        encode_value(ac, enc_freqs, val);
+        ac.encode(enc_freqs, val);
+        enc_freqs.increment(val);
     }
     ac.flush();
     
@@ -36,7 +37,8 @@ TEST(EntropyTest, ArithmeticEndToEnd) {
     FrequencyTable dec_freqs(33); // Must start exactly the same
     
     for (size_t i = 0; i < original.size(); ++i) {
-        uint32_t decoded = decode_value(ad, dec_freqs);
+        uint32_t decoded = ad.decode(dec_freqs);
+        dec_freqs.increment(decoded);
         ASSERT_EQ(decoded, original[i]) << "Failed at index " << i;
     }
 }

@@ -6,24 +6,21 @@
 namespace xtm::container {
 
 namespace {
+// CRC32 table, built once via thread-safe static initialization (no data
+// race on first use from concurrent decoder threads).
 uint32_t calculate_crc32(const uint8_t* data, size_t length) {
-    static uint32_t table[256];
-    static bool initialized = false;
-    static std::mutex init_mutex;
-    if (!initialized) {
-        std::lock_guard<std::mutex> lock(init_mutex);
-        if (!initialized) {
-            for (uint32_t i = 0; i < 256; i++) {
-                uint32_t c = i;
-                for (int j = 0; j < 8; j++) {
-                    if (c & 1) c = 0xedb88320 ^ (c >> 1);
-                    else c >>= 1;
-                }
-                table[i] = c;
+    static const auto table = []() {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int j = 0; j < 8; j++) {
+                if (c & 1) c = 0xedb88320 ^ (c >> 1);
+                else c >>= 1;
             }
-            initialized = true;
+            t[i] = c;
         }
-    }
+        return t;
+    }();
     uint32_t c = 0xffffffff;
     for (size_t i = 0; i < length; i++) {
         c = table[(c ^ data[i]) & 0xff] ^ (c >> 8);
@@ -68,9 +65,7 @@ void XtmWriter::write_superblock(uint32_t s_idx, std::vector<XtmWriter::PendingB
             entry.block_height = block.height;
             entry.byte_offset = offset;
             entry.byte_length = block.bitstream.size();
-            if (header_.version >= 3) {
-                entry.checksum = calculate_crc32(block.bitstream.data(), block.bitstream.size());
-            }
+            entry.checksum = calculate_crc32(block.bitstream.data(), block.bitstream.size());
             final_index_.push_back(entry);
         }
         
@@ -96,9 +91,7 @@ void XtmWriter::finalize() {
             entry.block_height = block.height;
             entry.byte_offset = offset;
             entry.byte_length = block.bitstream.size();
-            if (header_.version >= 3) {
-                entry.checksum = calculate_crc32(block.bitstream.data(), block.bitstream.size());
-            }
+            entry.checksum = calculate_crc32(block.bitstream.data(), block.bitstream.size());
             final_index_.push_back(entry);
         }
     }
@@ -140,7 +133,11 @@ XtmReader::XtmReader(const std::string& filepath) {
     // Sanity-check the index region against the actual file size
     stream_.seekg(0, std::ios::end);
     std::streamoff file_size = stream_.tellg();
-    if (file_size < 0 || static_cast<std::uint64_t>(file_size) <= header_.index_offset) {
+    if (file_size < 0) {
+        throw std::runtime_error("Corrupt XTM: cannot determine file size");
+    }
+    file_size_ = static_cast<std::uint64_t>(file_size);
+    if (file_size_ <= header_.index_offset) {
         throw std::runtime_error("Corrupt XTM: index offset lies outside the file");
     }
     
@@ -152,20 +149,17 @@ XtmReader::XtmReader(const std::string& filepath) {
         throw std::runtime_error("Corrupt XTM: failed to read index entry count");
     }
     
-    // Each entry is 32 bytes (4 x uint32 + 2 x uint64) in v2, 36 bytes in v3
-    std::uint64_t entry_size = 4 * sizeof(uint32_t) + 2 * sizeof(uint64_t);
-    if (header_.version >= 3) {
-        entry_size += sizeof(uint32_t); // checksum
-    }
+    // Each entry is 36 bytes (4 x uint32 + 2 x uint64 + checksum u32)
+    std::uint64_t entry_size = 4 * sizeof(uint32_t) + 2 * sizeof(uint64_t) + sizeof(uint32_t);
     if (num_entries > 0 &&
         header_.index_offset + sizeof(num_entries) + static_cast<std::uint64_t>(num_entries) * entry_size >
-            static_cast<std::uint64_t>(file_size)) {
+            file_size_) {
         throw std::runtime_error("Corrupt XTM: index exceeds file size");
     }
     
     index_.resize(num_entries);
     for (uint32_t i = 0; i < num_entries; ++i) {
-        index_[i].read(stream_, header_.version);
+        index_[i].read(stream_);
     }
 }
 
@@ -178,11 +172,9 @@ std::vector<uint8_t> XtmReader::read_block(const BlockIndexEntry& entry) {
 void XtmReader::read_block(const BlockIndexEntry& entry, std::vector<uint8_t>& out_buffer) {
     std::lock_guard<std::mutex> lock(read_mutex_);
     
-    // Sanity-check the block region against the file size
-    stream_.seekg(0, std::ios::end);
-    std::streamoff file_size = stream_.tellg();
-    if (file_size >= 0 &&
-        (entry.byte_offset + entry.byte_length > static_cast<std::uint64_t>(file_size))) {
+    // Sanity-check the block region against the file size (cached at open;
+    // avoids a seekg(0, end) + tellg() pair per block).
+    if (entry.byte_offset + entry.byte_length > file_size_) {
         throw std::runtime_error("Corrupt XTM: block region lies outside the file");
     }
     
@@ -193,11 +185,9 @@ void XtmReader::read_block(const BlockIndexEntry& entry, std::vector<uint8_t>& o
         throw std::runtime_error("Corrupt XTM: failed to read block bitstream");
     }
     
-    if (header_.version >= 3) {
-        uint32_t computed = calculate_crc32(out_buffer.data(), out_buffer.size());
-        if (computed != entry.checksum) {
-            throw std::runtime_error("Corrupt XTM: block CRC32 mismatch");
-        }
+    uint32_t computed = calculate_crc32(out_buffer.data(), out_buffer.size());
+    if (computed != entry.checksum) {
+        throw std::runtime_error("Corrupt XTM: block CRC32 mismatch");
     }
 }
 

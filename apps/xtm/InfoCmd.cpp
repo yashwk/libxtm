@@ -23,7 +23,6 @@ int run_info(int argc, char** argv) {
         
         std::cout << "--- XTM File Info ---\n";
         std::cout << "Magic: " << header.magic[0] << header.magic[1] << header.magic[2] << "\n";
-        std::cout << "Version: " << header.version << "\n";
         std::cout << "Flags: " << header.flags << "\n";
         std::cout << "Context Model: " << header.context_model << "\n";
         std::cout << "NoData Value: " << header.nodata_value << "\n";

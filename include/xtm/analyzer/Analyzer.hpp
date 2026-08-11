@@ -3,6 +3,7 @@
 #include "xtm/coding/PipelineContext.hpp"
 #include "xtm/predictor/Predictor.hpp"
 #include <vector>
+#include <array>
 #include <cstdint>
 
 namespace xtm::analyzer {
@@ -101,6 +102,14 @@ struct AnalysisReport {
     double chosen_usage_pct = 0.0;
     double second_order_usage_pct = 0.0;
 
+    // Residual re-prediction pool: blocks won by each of the 7 ResidualPredictorIds
+    // (0 = None, 1 = Average, 2 = Median, 3 = Left, 4 = Gradient, 5 = Gap,
+    // 6 = LeastSquares) and the estimated bits saved by the pool over the
+    // plain primary residuals (sum of per-block second_order_bits_savings).
+    std::array<std::size_t, 7> residual_predictor_blocks = {};
+    double residual_pool_savings_bits = 0.0;
+    double second_order_savings_bpp = 0.0;
+
     std::size_t leaves_512 = 0;
     std::size_t leaves_256 = 0;
     std::size_t leaves_128 = 0;
@@ -109,6 +118,8 @@ struct AnalysisReport {
 
     EntropyBudget budget;
     double estimated_file_bytes = 0.0;
+    // Raw Float32 bytes (sample_count * 4) / estimated_file_bytes.
+    double estimated_compression_ratio = 0.0;
 
     bool wavelet_evaluated = false;
     double predictor_estimate_bpp = 0.0;

@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <map>
+#include <array>
 
 namespace xtm::container {
 
@@ -58,6 +59,7 @@ private:
     XtmHeader header_;
     std::vector<BlockIndexEntry> index_;
     std::mutex read_mutex_;
+    std::uint64_t file_size_ = 0; // cached at open for per-block bounds checks
 };
 
 } // namespace xtm::container

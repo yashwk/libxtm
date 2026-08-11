@@ -10,6 +10,7 @@
 #include <mutex>
 #include <chrono>
 #include <cmath>
+#include <array>
 #include <cstring>
 #include <unordered_map>
 #include "xtm/coding/Pipeline.hpp"
@@ -35,14 +36,14 @@ EncodeResult XtmEncoder::encode(const terrain::IntGrid& grid,
         double local_time_entropy = 0.0;
         double local_time_io = 0.0;
         std::uint32_t local_total_blocks = leaves.size();
-        std::map<uint32_t, PredictorStats> local_predictor_stats;
+        std::array<PredictorStats, 32> local_predictor_stats{};
         coding::EncodingContext ctx_data;
         coding::BitWriter bw;
         std::vector<container::XtmWriter::PendingBlock> local_blocks;
         
         uint32_t leaf_idx = 0;
         for (auto& leaf : leaves) {
-            std::vector<int32_t> data = leaf.selection.best_residuals;
+            const std::vector<int32_t>& data = leaf.selection.best_residuals;
             
             auto t_ent_start = high_resolution_clock::now();
             bw.reset();
@@ -59,14 +60,22 @@ EncodeResult XtmEncoder::encode(const terrain::IntGrid& grid,
                 auto& stats = local_predictor_stats[predictor_idx];
                 stats.count++;
                 
-                uint32_t pid_raw = static_cast<uint32_t>(leaf.selection.best_predictor->id());
-                if (leaf.selection.use_second_order) {
-                    pid_raw |= 0x80;
-                }
-                bw.write_bits(pid_raw, 8);
+                // One byte: 5-bit primary predictor id + 3-bit residual
+                // predictor id (0 = none). The second-order stage is signaled
+                // by the residual id.
+                uint32_t byte = (static_cast<uint32_t>(leaf.selection.residual_predictor_id) << 5) | predictor_idx;
+                bw.write_bits(byte, 8);
                 
                 if (ctx.has_precision) {
-                    uint32_t prec_pid_raw = leaf.selection.best_prec_predictor ? static_cast<uint32_t>(leaf.selection.best_prec_predictor->id()) : 0xFF;
+                    // 0xFF = no precision plane, 0xFE = raw passthrough (no
+                    // prediction — chosen when the digit values are already
+                    // incompressible), otherwise the predictor id.
+                    uint32_t prec_pid_raw = 0xFF;
+                    if (leaf.selection.best_prec_raw) {
+                        prec_pid_raw = 0xFE;
+                    } else if (leaf.selection.best_prec_predictor) {
+                        prec_pid_raw = static_cast<uint32_t>(leaf.selection.best_prec_predictor->id());
+                    }
                     bw.write_bits(prec_pid_raw, 8);
                 }
                 
@@ -75,6 +84,14 @@ EncodeResult XtmEncoder::encode(const terrain::IntGrid& grid,
                     uint32_t p_bits;
                     std::memcpy(&p_bits, &p, sizeof(int32_t));
                     bw.write_bits(p_bits, 32);
+                }
+                if (leaf.selection.residual_predictor_id != analyzer::ResidualPredictorId::None) {
+                    bw.write_bits(leaf.selection.best_residual_parameters.size(), 8);
+                    for (int32_t p : leaf.selection.best_residual_parameters) {
+                        uint32_t p_bits;
+                        std::memcpy(&p_bits, &p, sizeof(int32_t));
+                        bw.write_bits(p_bits, 32);
+                    }
                 }
             }
             
@@ -153,9 +170,10 @@ EncodeResult XtmEncoder::encode(const terrain::IntGrid& grid,
         result.time_io += local_time_io;
         result.total_blocks += local_total_blocks;
         
-        for (const auto& kv : local_predictor_stats) {
-            auto& ds = result.predictor_stats[kv.first];
-            ds.count += kv.second.count;
+        for (size_t i = 0; i < local_predictor_stats.size(); ++i) {
+            if (local_predictor_stats[i].count == 0) continue;
+            auto& ds = result.predictor_stats[static_cast<uint32_t>(i)];
+            ds.count += local_predictor_stats[i].count;
         }
     });
     
