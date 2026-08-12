@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main, fix/review]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      XTM_BIN: ${{ matrix.os == 'windows-latest' && 'build/bin/xtm.exe' || 'build/bin/xtm' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgdal-dev ninja-build python3-dev
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gdal ninja python
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix)" >> "$GITHUB_ENV"
+          echo "$(brew --prefix)/opt/python/libexec/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        id: msys
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gdal
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-pkgconf
+            git
+
+      - name: Select compiler (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          echo "MSYS_ROOT=${{ steps.msys.outputs.msys2-location }}" >> "$GITHUB_ENV"
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${{ steps.msys.outputs.msys2-location }}/mingw64" >> "$GITHUB_ENV"
+          echo "${{ steps.msys.outputs.msys2-location }}/mingw64/bin" >> "$GITHUB_PATH"
+          echo "${{ steps.msys.outputs.msys2-location }}/usr/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXTM_BUILD_PYTHON=ON \
+            -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Python bindings smoke test
+        run: PYTHONPATH=build/lib python3 tests/python/test_xtm_bindings.py
+
+      - name: Upload binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xtm-${{ matrix.os }}
+          path: |
+            build/bin/*
+            build/lib/*
+
+  roundtrip:
+    name: Roundtrip (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      XTM_BIN: ${{ matrix.os == 'windows-latest' && 'build/bin/xtm.exe' || 'build/bin/xtm' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgdal-dev ninja-build
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gdal ninja
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        id: msys
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gdal
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-pkgconf
+
+      - name: Select compiler (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          echo "MSYS_ROOT=${{ steps.msys.outputs.msys2-location }}" >> "$GITHUB_ENV"
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${{ steps.msys.outputs.msys2-location }}/mingw64" >> "$GITHUB_ENV"
+          echo "${{ steps.msys.outputs.msys2-location }}/mingw64/bin" >> "$GITHUB_PATH"
+          echo "${{ steps.msys.outputs.msys2-location }}/usr/bin" >> "$GITHUB_PATH"
+
+      - name: Configure & build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
+          cmake --build build --parallel
+
+      - name: Encode & verify
+        run: |
+          "$XTM_BIN" encode data/canyons/grand_canyon_512.tif -o /tmp/sample.xtm
+          "$XTM_BIN" verify /tmp/sample.xtm data/canyons/grand_canyon_512.tif
