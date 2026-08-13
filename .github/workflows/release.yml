@@ -73,8 +73,8 @@ jobs:
           path: |
             dist/wheels/*.whl
             dist/sdist/*.tar.gz
-            build/*.tar.gz
-            build/*.deb
+            *.tar.gz
+            *.deb
 
   publish:
     name: Publish to GitHub Release and PyPI
