@@ -99,14 +99,14 @@ jobs:
         run: |
           conda install -y -c conda-forge conda-build anaconda-client
           conda-build recipe/ -c conda-forge
+          echo "CONDA_PKG=$(find "$CONDA_PREFIX/conda-bld" -name 'libxtm-*.conda' | head -1)" >> "$GITHUB_ENV"
 
       - name: Upload to anaconda.org
         env:
           ANACONDA_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
         run: |
-          PKG=$(find "$CONDA_PREFIX/conda-bld" ~/conda-bld \( -name 'libxtm-*.conda' -o -name 'libxtm-*.tar.bz2' \) 2>/dev/null | head -1)
-          test -n "$PKG"
-          anaconda -t "$ANACONDA_TOKEN" upload "$PKG"
+          test -n "$CONDA_PKG"
+          anaconda -t "$ANACONDA_TOKEN" upload "$CONDA_PKG"
 
   publish:
     name: Publish to GitHub Release and PyPI
