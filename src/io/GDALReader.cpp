@@ -91,7 +91,8 @@ terrain::IntGrid read_gdal_quantized(const std::string& path, double precision, 
     info.height = height;
 
     double transform[6] = {0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
-    if (dataset->GetGeoTransform(transform) == CE_None) {
+    bool has_gt = (dataset->GetGeoTransform(transform) == CE_None);
+    if (has_gt) {
         info.transform.origin_x = transform[0];
         info.transform.pixel_width = transform[1];
         info.transform.rotation_x = transform[2];
@@ -125,6 +126,15 @@ terrain::IntGrid read_gdal_quantized(const std::string& path, double precision, 
     double raw_max = std::numeric_limits<double>::lowest();
     std::size_t raw_valid = 0;
 
+    // Deterministic stride sample of the raw values for percentile and
+    // histogram estimation (bounded, uniform, no RNG).
+    constexpr std::size_t kSampleCap = 262144;
+    std::vector<double> raw_samples;
+    raw_samples.reserve(kSampleCap);
+    const std::size_t total_pixels = static_cast<std::size_t>(width) * height;
+    const std::size_t sample_stride =
+        std::max<std::size_t>(1, total_pixels / kSampleCap);
+
     CPLErr err = CE_None;
     for (std::uint32_t y0 = 0; y0 < height; y0 += band_rows) {
         int rows = std::min(band_rows, height - y0);
@@ -138,6 +148,9 @@ terrain::IntGrid read_gdal_quantized(const std::string& path, double precision, 
             raw_sumsq += window[i] * window[i];
             if (window[i] < raw_min) raw_min = window[i];
             if (window[i] > raw_max) raw_max = window[i];
+            if (raw_valid % sample_stride == 0 && raw_samples.size() < kSampleCap) {
+                raw_samples.push_back(window[i]);
+            }
             raw_valid++;
         }
 
@@ -167,6 +180,65 @@ terrain::IntGrid read_gdal_quantized(const std::string& path, double precision, 
         : 0.0;
     info.raw_stddev = (variance > 0.0) ? std::sqrt(variance) : 0.0;
     info.raw_valid_pixels = raw_valid;
+
+    // Percentiles + coarse histogram from the stride sample.
+    if (raw_valid > 0 && !raw_samples.empty()) {
+        std::sort(raw_samples.begin(), raw_samples.end());
+        const double frac[5] = {0.01, 0.25, 0.50, 0.75, 0.99};
+        for (int k = 0; k < 5; ++k) {
+            std::size_t idx = static_cast<std::size_t>(
+                std::llround(frac[k] * static_cast<double>(raw_samples.size() - 1)));
+            info.raw_percentiles[static_cast<std::size_t>(k)] = raw_samples[idx];
+        }
+        constexpr std::size_t buckets = 50;
+        std::vector<std::size_t> counts(buckets, 0);
+        const double range = raw_max - raw_min;
+        for (double v : raw_samples) {
+            std::size_t b = (range > 0.0)
+                ? std::min(buckets - 1,
+                           static_cast<std::size_t>((v - raw_min) / range * buckets))
+                : 0;
+            counts[b]++;
+        }
+        const std::size_t peak = *std::max_element(counts.begin(), counts.end());
+        info.elevation_histogram.reserve(buckets);
+        for (std::size_t c : counts) {
+            info.elevation_histogram.push_back(peak > 0
+                ? static_cast<double>(c) / static_cast<double>(peak) : 0.0);
+        }
+    }
+
+    // Georeferencing surfaced from the dataset header.
+    info.has_georeference = has_gt;
+    if (has_gt) {
+        info.pixel_width = std::fabs(transform[1]);
+        info.pixel_height = std::fabs(transform[5]);
+        auto corner_x = [&](double px, double py) {
+            return transform[0] + px * transform[1] + py * transform[2];
+        };
+        auto corner_y = [&](double px, double py) {
+            return transform[3] + px * transform[4] + py * transform[5];
+        };
+        info.bbox_min_x = info.bbox_max_x = corner_x(0.0, 0.0);
+        info.bbox_min_y = info.bbox_max_y = corner_y(0.0, 0.0);
+        for (double px : {0.0, static_cast<double>(width)}) {
+            for (double py : {0.0, static_cast<double>(height)}) {
+                info.bbox_min_x = std::min(info.bbox_min_x, corner_x(px, py));
+                info.bbox_max_x = std::max(info.bbox_max_x, corner_x(px, py));
+                info.bbox_min_y = std::min(info.bbox_min_y, corner_y(px, py));
+                info.bbox_max_y = std::max(info.bbox_max_y, corner_y(px, py));
+            }
+        }
+    }
+    if (!info.wkt_projection.empty()) {
+        OGRSpatialReference srs;
+        if (srs.SetFromUserInput(info.wkt_projection.c_str()) == OGRERR_NONE) {
+            const char* an = srs.GetAuthorityName(nullptr);
+            const char* ac = srs.GetAuthorityCode(nullptr);
+            if (an && ac) info.crs = std::string(an) + ":" + ac;
+            info.pixel_units = srs.IsGeographic() ? "deg" : "m";
+        }
+    }
 
     if (info.nodata_value.has_value()) {
         terrain::inpaint(grid);

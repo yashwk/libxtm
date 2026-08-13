@@ -2,8 +2,9 @@
 #include "xtm/Terrain.hpp"
 #include "xtm/coding/PipelineContext.hpp"
 #include "xtm/predictor/Predictor.hpp"
-#include <vector>
 #include <array>
+#include <string>
+#include <vector>
 #include <cstdint>
 
 namespace xtm::analyzer {
@@ -16,6 +17,12 @@ struct RawElevationStats {
     double mean = 0.0;
     double stddev = 0.0;
     std::size_t valid_pixels = 0;
+
+    // p1/p25/p50/p75/p99 estimated from a deterministic stride sample.
+    std::array<double, 5> percentiles = {0.0, 0.0, 0.0, 0.0, 0.0};
+    // 50-bucket elevation distribution over [min_val, max_val], normalized
+    // to [0, 1] by the peak bucket; empty when no valid pixels.
+    std::vector<double> elevation_histogram;
 };
 
 // Statistics of the quantized grid, i.e. the values the encoder compresses.
@@ -118,8 +125,28 @@ struct AnalysisReport {
 
     EntropyBudget budget;
     double estimated_file_bytes = 0.0;
+    // Spread of the size estimate: one stddev of the per-leaf selection-bit
+    // budget propagated to total payload bytes (blocks assumed independent).
+    double estimated_bytes_stddev = 0.0;
     // Raw Float32 bytes (sample_count * 4) / estimated_file_bytes.
     double estimated_compression_ratio = 0.0;
+
+    // Georeferencing surfaced from the dataset header (absent when unset).
+    std::string crs;
+    std::string pixel_units;
+    bool has_georeference = false;
+    double pixel_width = 0.0;
+    double pixel_height = 0.0;
+    double bbox_min_x = 0.0;
+    double bbox_min_y = 0.0;
+    double bbox_max_x = 0.0;
+    double bbox_max_y = 0.0;
+
+    // Per-phase wall time, accumulated across superblocks (parallel workers
+    // overlap, so the sum may exceed the wall-clock total).
+    double time_quadtree_ms = 0.0;
+    double time_predictor_eval_ms = 0.0;
+    double time_entropy_ms = 0.0;
 
     bool wavelet_evaluated = false;
     double predictor_estimate_bpp = 0.0;

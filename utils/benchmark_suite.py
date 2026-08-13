@@ -119,12 +119,19 @@ def process_tile(cat, tile, cat_dir, xtm_bin, keep_temp):
         wavelet_pct = 0.0
         pred_pcts = {i: 0.0 for i in range(7)}
         
-        wv_match = re.search(r"Wavelet Transform applied to \d+ blocks \(([\d\.]+)\%\)", stdout)
+        wv_match = re.search(r"Wavelet Transform applied to [\d,]+ blocks \(([\d\.]+)\%\)", stdout)
         if wv_match:
             wavelet_pct = float(wv_match.group(1))
             
-        for p_idx in range(7):
-            p_match = re.search(rf"Predictor {p_idx}: \d+ blocks \(([\d\.]+)\%\)", stdout)
+        # Predictor Statistics table rows are parsed from the line prefix
+        # only: one "  <name> <blocks> <pct>%" row per predictor, sorted by
+        # usage. Block counts carry thousands separators.
+        pred_names = {0: "Gradient", 1: "Left", 2: "JPEG-LS", 3: "Polynomial",
+                      4: "GAP (CALIC)", 5: "Least Squares"}
+        for p_idx, p_name in pred_names.items():
+            p_match = re.search(
+                rf"^  {re.escape(p_name)}\s+[\d,]+\s+([\d\.]+)\%",
+                stdout, re.MULTILINE)
             if p_match:
                 pred_pcts[p_idx] = float(p_match.group(1))
                 

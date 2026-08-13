@@ -4,6 +4,7 @@
 #include "xtm/transform/Wavelet.hpp"
 #include "xtm/coding/Pipeline.hpp"
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
@@ -13,6 +14,12 @@
 namespace xtm::analyzer {
 
 namespace {
+
+using clock = std::chrono::high_resolution_clock;
+
+double elapsed_ms(clock::time_point from, clock::time_point to) {
+    return std::chrono::duration<double, std::milli>(to - from).count();
+}
 
 // True Shannon entropy (bits/sample) of a residual stream. The histogram keys
 // are sorted before summing, keeping the result deterministic across runs.
@@ -91,6 +98,13 @@ struct SuperblockStats {
     double winner_abs_sum = 0.0;
     double winner_est_bits = 0.0;
     double wv_est_bits = 0.0;
+
+    double leaf_cost_bits = 0.0;    // sum of per-leaf selection total_bits
+    double leaf_cost_sq = 0.0;      // sum of per-leaf selection total_bits^2
+
+    double quad_ms = 0.0;           // per-phase cumulative timings (parallel
+    double eval_ms = 0.0;           // workers overlap, so the sums may exceed
+    double entropy_ms = 0.0;        // the wall-clock total)
 
     std::size_t usage[6] = {0, 0, 0, 0, 0, 0};
     std::size_t leaf512 = 0;
@@ -248,15 +262,19 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
     coding::for_each_superblock(grid, ctx, global_selector,
         [&](const terrain::IntGrid& sgrid, std::uint32_t /*sx*/, std::uint32_t /*sy*/,
             std::uint32_t s_idx, std::vector<partition::QuadtreeNode>& leaves, double quad_bits,
-            const analyzer::PredictorSelector& /*selector*/, double /*partition_time_ms*/) {
+            const analyzer::PredictorSelector& /*selector*/, double partition_time_ms) {
             SuperblockStats& s = slots[s_idx];
             s.quad_bits = quad_bits;
             s.blocks = leaves.size();
+            s.quad_ms += partition_time_ms;
 
             double leaf_cost_sum = 0.0;
+            const auto t_entropy0 = clock::now();
             for (const auto& leaf : leaves) {
                 const SelectionResult& sel = leaf.selection;
                 leaf_cost_sum += sel.total_bits;
+                s.leaf_cost_bits += sel.total_bits;
+                s.leaf_cost_sq += sel.total_bits * sel.total_bits;
                 if (sel.best_predictor) {
                     s.usage[predictor_index(sel.best_predictor)]++;
                     if (sel.use_second_order) {
@@ -299,8 +317,10 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
                 }
             }
             s.structure_bits = quad_bits - leaf_cost_sum;
+            s.entropy_ms += elapsed_ms(t_entropy0, clock::now());
 
             // Whole-superblock runs: what each predictor would cost alone.
+            const auto t_eval0 = clock::now();
             partition::BlockView full_sb{&sgrid, 0, 0, sgrid.width, sgrid.height};
             std::vector<int32_t> scratch_res;
             std::vector<int32_t> scratch_param;
@@ -316,6 +336,7 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
                 for (int32_t r : scratch_res) s.abs_sum[i] += xtm::coding::safe_abs(r);
                 s.px[i] += scratch_res.size();
             }
+            s.eval_ms += elapsed_ms(t_eval0, clock::now());
         });
 
     // ---- Deterministic serial reduction in superblock order ----
@@ -342,6 +363,9 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
         report.total_blocks += s.blocks;
         report.second_order_usage_pct += static_cast<double>(s.sec_blocks);
         report.residual_pool_savings_bits += s.resid_savings;
+        report.time_quadtree_ms += s.quad_ms;
+        report.time_predictor_eval_ms += s.eval_ms;
+        report.time_entropy_ms += s.entropy_ms;
         for (std::size_t i = 0; i < 7; ++i) {
             report.residual_predictor_blocks[i] += s.resid_pool[i];
         }
@@ -368,6 +392,24 @@ AnalysisReport analyze_terrain(const terrain::IntGrid& grid,
     report.estimated_compression_ratio = report.estimated_file_bytes > 0
         ? static_cast<double>(report.sample_count) * 4.0 / report.estimated_file_bytes
         : 0.0;
+
+    // Spread of the size estimate: per-leaf selection bits treated as
+    // independent draws, propagated to payload bytes.
+    {
+        double bits_x = 0.0, bits_x2 = 0.0;
+        std::size_t n = 0;
+        for (const SuperblockStats& s : slots) {
+            bits_x += s.leaf_cost_bits;
+            bits_x2 += s.leaf_cost_sq;
+            n += s.blocks;
+        }
+        if (n > 1) {
+            double var = bits_x2 / static_cast<double>(n)
+                       - (bits_x / static_cast<double>(n)) * (bits_x / static_cast<double>(n));
+            report.estimated_bytes_stddev =
+                (var > 0.0) ? std::sqrt(var * static_cast<double>(n)) / 8.0 : 0.0;
+        }
+    }
 
     // ---- Predictor table ----
     for (std::size_t i = 0; i < predictors_list.size(); ++i) {

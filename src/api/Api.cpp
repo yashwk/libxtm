@@ -183,12 +183,24 @@ analyzer::AnalysisReport analyze_file(
     raw.mean = info.raw_mean;
     raw.stddev = info.raw_stddev;
     raw.valid_pixels = info.raw_valid_pixels;
+    raw.percentiles = info.raw_percentiles;
+    raw.elevation_histogram = info.elevation_histogram;
 
     coding::PipelineContext ctx(options.precision, coding::ContextModel::Simple,
                                 analyzer::PipelineType::Predictor, false,
                                 options.num_threads);
     auto report = analyzer::analyze_terrain(grid, raw, ctx, analyzer_options);
     const auto t2 = clock::now();
+
+    report.crs = info.crs;
+    report.pixel_units = info.pixel_units;
+    report.has_georeference = info.has_georeference;
+    report.pixel_width = info.pixel_width;
+    report.pixel_height = info.pixel_height;
+    report.bbox_min_x = info.bbox_min_x;
+    report.bbox_min_y = info.bbox_min_y;
+    report.bbox_max_x = info.bbox_max_x;
+    report.bbox_max_y = info.bbox_max_y;
 
     if (time_load_ms) *time_load_ms = elapsed_ms(t0, t1);
     if (time_analyze_ms) *time_analyze_ms = elapsed_ms(t1, t2);

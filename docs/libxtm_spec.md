@@ -484,18 +484,31 @@ The executable is named `xtm`.
 
 ```bash
 xtm analyze terrain.tif
-xtm encode terrain.tif terrain.xtm
-xtm decode terrain.xtm terrain.tif
+xtm encode terrain.tif -o terrain.xtm
+xtm decode terrain.xtm -o terrain.tif
 xtm info terrain.xtm
 xtm verify terrain.xtm terrain.tif
 ```
 
+Output paths are given with `-o` (positional output arguments are not
+accepted).
+
 **Encoding options:**
 
 ```bash
-xtm encode input.tif output.xtm --scale 0.01
-xtm encode input.tif output.xtm --threads 16
+xtm encode input.tif -o output.xtm --precision 0.01
+xtm encode input.tif -o output.xtm --threads 16
+xtm encode input.tif -o output.xtm --pipeline wavelet --context extended
+xtm encode input.tif -o output.xtm --disable-quadtree
 ```
+
+| Option | Meaning |
+|---|---|
+| `--precision <value>` | vertical quantization step in meters; numeric (e.g. `0.01`) or named (`m`, `dm`, `cm`, `mm`). `--scale` is an alias. Default `1.0` |
+| `--threads <n>` | worker count; `0` = hardware concurrency. Default `0` |
+| `--pipeline predictor\|wavelet` | `predictor` (default) or experimental `wavelet` (requires `precision >= 1.0`) |
+| `--context simple\|extended` | context model; default `simple` |
+| `--disable-quadtree` | fixed 64×64 blocks instead of the adaptive quadtree (informational flag in the header) |
 
 The CLI should primarily:
 

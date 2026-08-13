@@ -9,8 +9,8 @@
 void print_usage() {
     std::cout << "Usage: xtm <command> [options]\n\n";
     std::cout << "Commands:\n";
-    std::cout << "  analyze <input.tif>    Run terrain analyzer and print statistics\n";
-    std::cout << "  encode <input.tif> -o <output.xtm> [--scale <value>]\n";
+    std::cout << "  analyze <input.tif>    Run terrain analyzer and print statistics [--precision <value>] [--wavelet] [--json] [--compact] [--no-color]\n";
+    std::cout << "  encode <input.tif> -o <output.xtm> [--precision <value>] [--pipeline predictor|wavelet] [--context simple|extended] [--disable-quadtree] [--threads <n>] [--no-color]\n";
     std::cout << "  decode <input.xtm> -o <output.tif> [--region x y w h]\n";
     std::cout << "  info <input.xtm>       Print header and block index info\n";
     std::cout << "  verify <input.xtm> [input.tif]  Verify checksums or diff against source\n";
@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
 
     if (command == "analyze") {
         if (argc < 3) {
-            std::cerr << "Usage: xtm analyze <input.tif> [--scale <value>]\n";
+            std::cerr << "Usage: xtm analyze <input.tif> [--precision <value>] [--wavelet] [--json] [--compact] [--no-color]\n";
             return 1;
         }
         return xtm::cli::run_analyze(argc - 1, argv + 1);
