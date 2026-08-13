@@ -1,6 +1,6 @@
 # libxtm Compression Pipeline — Comprehensive Technical Reference
 
-This document is the authoritative walkthrough of libxtm's end-to-end pipeline: how a raw GeoTIFF becomes a `.xtm` file, how a `.xtm` file becomes a GeoTIFF again (including region-of-interest queries), and how `xtm analyze` instruments the pipeline. It documents the **current implementation** (v0.1.0). If the code and this document ever disagree, the code wins — the public headers under `include/xtm/` are the source of truth.
+This document is the authoritative walkthrough of libxtm's end-to-end pipeline: how a raw GeoTIFF becomes a `.xtm` file, how a `.xtm` file becomes a GeoTIFF again (including region-of-interest queries), and how `xtm analyze` instruments the pipeline. It documents the **current implementation** (v0.2.0). If the code and this document ever disagree, the code wins — the public headers under `include/xtm/` are the source of truth.
 
 ---
 
