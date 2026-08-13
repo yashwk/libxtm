@@ -104,7 +104,7 @@ jobs:
         env:
           ANACONDA_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
         run: |
-          PKG=$(find "$CONDA_PREFIX/conda-bld" ~/conda-bld -name 'libxtm-*.tar.bz2' 2>/dev/null | head -1)
+          PKG=$(find "$CONDA_PREFIX/conda-bld" ~/conda-bld \( -name 'libxtm-*.conda' -o -name 'libxtm-*.tar.bz2' \) 2>/dev/null | head -1)
           test -n "$PKG"
           anaconda -t "$ANACONDA_TOKEN" upload "$PKG"
 
