@@ -110,7 +110,12 @@ jobs:
             exit 1
           fi
           TOKEN=$(printf '%s' "$ANACONDA_TOKEN" | tr -d '[:space:]')
-          anaconda -t "$TOKEN" upload "$CONDA_PKG"
+          if [ "${#TOKEN}" -lt 10 ]; then
+            echo "Error: ANACONDA_TOKEN looks empty or truncated."
+            exit 1
+          fi
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/anaconda-token"
+          anaconda -t "$RUNNER_TEMP/anaconda-token" upload "$CONDA_PKG"
 
   publish:
     name: Publish to GitHub Release and PyPI
