@@ -19,11 +19,10 @@ requirements:
     - cmake
     - ninja
     - python
-    - pip
-    - scikit-build-core
   host:
     - python
     - pip
+    - scikit-build-core
     - nanobind
     - libgdal
   run:
