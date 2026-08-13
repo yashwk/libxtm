@@ -1,5 +1,5 @@
 #include "InfoCmd.hpp"
-#include "xtm/container/IO.hpp"
+#include "xtm/Api.hpp"
 #include <iostream>
 #include <iomanip>
 
@@ -18,9 +18,9 @@ int run_info(int argc, char** argv) {
     }
 
     try {
-        container::XtmReader reader(input_path);
-        const auto& header = reader.get_header();
-        
+        auto info = api::info_file(input_path);
+        const auto& header = info.header;
+
         std::cout << "--- XTM File Info ---\n";
         std::cout << "Magic: " << header.magic[0] << header.magic[1] << header.magic[2] << "\n";
         std::cout << "Flags: " << header.flags << "\n";
@@ -34,21 +34,18 @@ int run_info(int argc, char** argv) {
         std::cout << "Pixel Size: " << header.transform.pixel_width << " x " << header.transform.pixel_height << "\n";
         std::cout << "Quantization Precision: " << header.precision << "\n";
         std::cout << "Index Offset: " << header.index_offset << "\n";
-        
-        const auto& index = reader.get_index();
-        std::cout << "\n--- Block Index (" << index.size() << " blocks) ---\n";
-        
-        uint64_t total_compressed = 0;
-        for (const auto& entry : index) {
+
+        std::cout << "\n--- Block Index (" << info.block_count << " blocks) ---\n";
+
+        for (const auto& entry : info.index) {
             std::cout << "Block [" << entry.block_x << "," << entry.block_y << "] "
                       << "Size [" << entry.block_width << "x" << entry.block_height << "] "
                       << "Offset: " << entry.byte_offset << " "
                       << "Length: " << entry.byte_length << " bytes\n";
-            total_compressed += entry.byte_length;
         }
-        
-        std::cout << "\nTotal Block Data: " << total_compressed << " bytes\n";
-        
+
+        std::cout << "\nTotal Block Data: " << info.total_payload_bytes << " bytes\n";
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

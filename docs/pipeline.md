@@ -519,6 +519,6 @@ Checksums (CRC32) exist per block and are verified on read; there is no whole-fi
 ## 11. Relationship to the Docs
 
 - **`README.md`** — quick start: features, build, and CLI usage.
-- **`libxtm_spec.md`** — target architecture / aspiration. Known current gaps: no rANS (range/arithmetic coder used), no lossless-Float32 mode, no Python bindings, no multiresolution pyramids, `xtm benchmark` CLI missing (the CLI instead provides `info`/`verify`).
+- **`libxtm_spec.md`** — target architecture / aspiration. Known current gaps: no rANS (range/arithmetic coder used), no lossless-Float32 mode, no multiresolution pyramids, `xtm benchmark` CLI missing (the CLI instead provides `info`/`verify`).
 - **`tests/unit/`** — the behavioral spec: round-trip losslessness (flat/ramp/noise/checkerboard), ROI-crop-vs-full-decode equality, thread determinism, sub-meter precision, container/header corruption handling. Run via `ctest`.
 - **`utils/`** — research helpers: `benchmark_suite.py`, `benchmark_roi.py`, `download_copernicus.py`.

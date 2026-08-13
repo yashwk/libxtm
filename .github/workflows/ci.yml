@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, fix/review]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      XTM_BIN: build/bin/xtm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgdal-dev ninja-build python3-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXTM_BUILD_PYTHON=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Python bindings smoke test
+        run: PYTHONPATH=build/lib python3 tests/python/test_xtm_bindings.py
+
+      - name: Encode & verify roundtrip
+        run: |
+          mkdir -p "$RUNNER_TEMP/xtm-roundtrip"
+          "$XTM_BIN" encode data/canyons/grand_canyon_512.tif -o "$RUNNER_TEMP/xtm-roundtrip/sample.xtm"
+          "$XTM_BIN" verify "$RUNNER_TEMP/xtm-roundtrip/sample.xtm" data/canyons/grand_canyon_512.tif
+
+      - name: Upload binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xtm-linux
+          path: |
+            build/bin/*
+            build/lib/*

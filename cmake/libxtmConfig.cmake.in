@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(GDAL)
+
+include("${CMAKE_CURRENT_LIST_DIR}/libxtmTargets.cmake")
+
+check_required_components(libxtm)

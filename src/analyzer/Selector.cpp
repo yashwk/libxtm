@@ -251,9 +251,7 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
                     for (uint32_t y = 1; y < block.height; ++y) {
                         const int32_t* row = src + y * w;
                         const int32_t* above = row - w;
-#if defined(__clang__)
-#pragma clang loop vectorize(enable)
-#else
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC ivdep
 #endif
                         for (uint32_t x = 1; x < w; ++x) {
@@ -280,9 +278,7 @@ SelectionResult PredictorSelector::select(const partition::BlockView& block) con
                     for (uint32_t y = 1; y < block.height; ++y) {
                         const int32_t* row = src + y * w;
                         const int32_t* above = row - w;
-#if defined(__clang__)
-#pragma clang loop vectorize(enable)
-#else
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC ivdep
 #endif
                         for (uint32_t x = 1; x < w; ++x) {

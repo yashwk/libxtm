@@ -1,0 +1,143 @@
+name: Release artifacts
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgdal-dev ninja-build python3-dev
+
+      - name: Build Python wheel
+        run: python3 -m pip wheel . -w dist/wheels
+
+      - name: Build Python sdist (for grayskull/conda recipe generation)
+        run: |
+          python3 -m pip install -q build
+          python3 -m build --sdist --outdir dist/sdist
+
+      - name: Repair wheel (bundle GDAL, manylinux)
+        run: |
+          python3 -m pip install -q auditwheel
+          auditwheel repair -w dist/wheels dist/wheels/*.whl
+          rm -f dist/wheels/*-linux_x86_64.whl
+
+      - name: Configure native build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DXTM_BUILD_PYTHON=OFF
+
+      - name: Build native binaries
+        run: cmake --build build --parallel
+
+      - name: Package native TGZ
+        run: cpack --config build/CPackConfig.cmake -G TGZ
+
+      - name: Package native DEB
+        run: cpack --config build/CPackConfig.cmake -G DEB
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/wheels/*.whl
+            dist/sdist/*.tar.gz
+            build/*.tar.gz
+            build/*.deb
+
+  conda-package:
+    name: conda package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          python-version: '3.13'
+          auto-update-conda: true
+
+      - name: Build conda package
+        run: |
+          conda install -y -c conda-forge conda-build anaconda-client
+          conda build recipe/ -c conda-forge
+
+      - name: Upload to anaconda.org
+        env:
+          ANACONDA_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
+        run: |
+          PKG=$(find "$CONDA_PREFIX/conda-bld" ~/conda-bld -name 'libxtm-*.tar.bz2' 2>/dev/null | head -1)
+          test -n "$PKG"
+          anaconda -t "$ANACONDA_TOKEN" upload "$PKG"
+
+  publish:
+    name: Publish to GitHub Release and PyPI
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    if: github.event_name == 'release' && github.event.action == 'published'
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Prepare PyPI-only directory
+        run: |
+          mkdir -p pypi-dist
+          find dist -type f -name '*.whl' -exec cp {} pypi-dist/ \;
+          find dist -path '*/sdist/*.tar.gz' -exec cp {} pypi-dist/ \;
+
+      - name: Upload artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist/
+          attestations: true

@@ -94,9 +94,7 @@ void LeastSquaresPredictor::encode(const partition::BlockView& block, std::vecto
     for (uint32_t y = 1; y < h; ++y) {
         const int32_t* row = block.row_data(y);
         const int32_t* above = block.row_data(y - 1);
-#if defined(__clang__)
-#pragma clang loop vectorize(enable)
-#else
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC ivdep
 #endif
         for (uint32_t x = 1; x < w; ++x) {

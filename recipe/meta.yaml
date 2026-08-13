@@ -1,0 +1,39 @@
+{% set version = "0.1.0" %}
+
+package:
+  name: libxtm
+  version: {{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  script: |
+    export CMAKE_PREFIX_PATH="$PREFIX"
+    $PYTHON -m pip install . --no-deps --no-build-isolation -vv
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake
+    - ninja
+    - python
+    - pip
+    - scikit-build-core
+  host:
+    - python
+    - pip
+    - nanobind
+    - libgdal
+  run:
+    - python
+    - libgdal
+
+test:
+  imports:
+    - xtm
+
+about:
+  home: https://github.com/yashwk/libxtm
+  summary: Lossless terrain elevation compression library

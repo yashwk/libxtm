@@ -19,7 +19,7 @@ protected:
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_int_distribution<> dis(10000, 99999);
-        temp_dir_ = std::filesystem::temp_directory_path() / ("xtm_test_gdal_" + std::to_string(dis(gen)));
+        temp_dir_ = (std::filesystem::temp_directory_path() / ("xtm_test_gdal_" + std::to_string(dis(gen)))).string();
         std::filesystem::create_directory(temp_dir_);
     }
 

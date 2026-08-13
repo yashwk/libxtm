@@ -1,11 +1,10 @@
 #include "AnalyzeCmd.hpp"
-#include "xtm/io/GDALReader.hpp"
+#include "xtm/Api.hpp"
 #include "xtm/analyzer/Analyzer.hpp"
-#include "xtm/coding/PipelineContext.hpp"
+#include "xtm/container/Header.hpp"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
-#include <chrono>
 #include <cmath>
 #include <algorithm>
 
@@ -23,7 +22,7 @@ int run_analyze(int argc, char** argv) {
     std::string input_path;
     double precision = 1.0;
     bool enable_wavelet = false;
-    
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--wavelet" || arg == "-w") {
@@ -37,38 +36,24 @@ int run_analyze(int argc, char** argv) {
             input_path = arg;
         }
     }
-    
+
     if (input_path.empty()) {
         print_usage();
         return 1;
     }
-    
-    using namespace std::chrono;
-    
-    try {
-        auto t0 = high_resolution_clock::now();
-        std::cout << "Loading dataset: " << input_path << "...\n";
-        io::RasterInfo info;
-        auto grid = io::read_gdal_quantized(input_path, precision, info);
-        auto t1 = high_resolution_clock::now();
 
+    try {
+        std::cout << "Loading dataset: " << input_path << "...\n";
+        std::cout << "Analyzing terrain (precision=" << precision << ")...\n";
+
+        api::EncodeOptions enc_options(precision);
         analyzer::AnalyzerOptions options;
         options.enable_wavelet_analysis = enable_wavelet;
 
-        std::cout << "Analyzing terrain (precision=" << precision << ")...\n";
-        coding::PipelineContext ctx(precision);
-        analyzer::RawElevationStats raw;
-        raw.min_val = info.raw_min;
-        raw.max_val = info.raw_max;
-        raw.mean = info.raw_mean;
-        raw.stddev = info.raw_stddev;
-        raw.valid_pixels = info.raw_valid_pixels;
-        auto report = analyzer::analyze_terrain(grid, raw, ctx, options);
-        auto t2 = high_resolution_clock::now();
-        
-        double load_ms = duration<double, std::milli>(t1 - t0).count();
-        double analyze_ms = duration<double, std::milli>(t2 - t1).count();
-        
+        double load_ms = 0.0;
+        double analyze_ms = 0.0;
+        auto report = api::analyze_file(input_path, enc_options, options, &load_ms, &analyze_ms);
+
         auto print_sep = []() { std::cout << std::string(60, '=') << "\n"; };
         auto print_header = [&](const std::string& title) {
             std::cout << "\n";
@@ -76,7 +61,7 @@ int run_analyze(int argc, char** argv) {
             std::cout << "  " << title << "\n";
             print_sep();
         };
-        
+
         // ---- 1. Dataset Overview ----
         print_header("Dataset Overview");
         std::cout << "Dimensions:          " << report.width << " x " << report.height
@@ -212,7 +197,7 @@ int run_analyze(int argc, char** argv) {
         if (report.total_blocks > 0) {
             double avg_px = static_cast<double>(report.sample_count) / report.total_blocks;
             std::cout << "Avg block area:      " << std::fixed << std::setprecision(1) << avg_px
-                      << " px (" << std::setprecision(0) << std::sqrt(avg_px) << "x" 
+                      << " px (" << std::setprecision(0) << std::sqrt(avg_px) << "x"
                       << std::sqrt(avg_px) << ")\n";
         }
         std::cout << "Partition + header overhead: " << std::setprecision(4)
@@ -280,12 +265,12 @@ int run_analyze(int argc, char** argv) {
         std::cout << "Compute:             load " << std::fixed << std::setprecision(0) << load_ms
                   << " ms, analysis " << analyze_ms << " ms\n";
         print_sep();
-        
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
-    
+
     return 0;
 }
 

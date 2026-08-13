@@ -1,37 +1,8 @@
-cmake_minimum_required(VERSION 3.20)
-
-# clang++ is the primary compiler; falls back to the platform default if absent
-if(NOT DEFINED CMAKE_CXX_COMPILER)
-    find_program(CLANG_CXX NAMES clang++)
-    if(CLANG_CXX)
-        set(CMAKE_CXX_COMPILER ${CLANG_CXX})
-    endif()
-endif()
-
-# clang toolchain: point at the real GCC install dir for libstdc++ headers/libs
-# (clang may pick an empty newer GCC dir when several versions are installed).
-# Must be set before project(): the compiler check inside project() links a
-# test program and would fail without these flags.
-if(CMAKE_CXX_COMPILER MATCHES "clang" OR CMAKE_CXX_COMPILER MATCHES "Clang")
-    find_program(GXX_CXX NAMES g++)
-    if(GXX_CXX)
-        execute_process(
-            COMMAND ${GXX_CXX} -print-file-name=libstdc++.so
-            OUTPUT_VARIABLE GCC_LIBSTDCXX
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET
-        )
-        if(GCC_LIBSTDCXX AND NOT GCC_LIBSTDCXX MATCHES "^libstdc")
-            get_filename_component(GCC_LIBSTDCXX_DIR "${GCC_LIBSTDCXX}" DIRECTORY)
-            message(STATUS "clang: using GCC install dir ${GCC_LIBSTDCXX_DIR} for libstdc++")
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --gcc-install-dir=${GCC_LIBSTDCXX_DIR}" CACHE STRING "Flags used by the CXX compiler" FORCE)
-            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L${GCC_LIBSTDCXX_DIR}" CACHE STRING "Flags used by the linker" FORCE)
-            set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -L${GCC_LIBSTDCXX_DIR}" CACHE STRING "Flags used by the linker" FORCE)
-        endif()
-    endif()
-endif()
+cmake_minimum_required(VERSION 3.21)
 
 project(libxtm VERSION 0.1.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +13,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "Setting build type to 'Release' as none was specified.")
   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
 endif()
+
+# Strict warnings by default for the top-level project; consumers embedding via
+# add_subdirectory opt in explicitly.
+option(XTM_WERROR "Treat compiler warnings as errors" ${PROJECT_IS_TOP_LEVEL})
 
 # ccache integration (zero-config: silently skipped if not installed)
 find_program(CCACHE_PROGRAM ccache)
@@ -74,29 +49,19 @@ endif()
 # Enable Interprocedural Optimization (LTO) only for Release builds
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_supported OUTPUT output)
-if(ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
+if(ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release"
+   AND NOT (APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+   AND NOT (MINGW AND CMAKE_CXX_COMPILER_ID MATCHES "GNU"))
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
 # Sanitizers
-option(ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ENABLE_TSAN "Enable Thread Sanitizer" OFF)
-option(ENABLE_MSAN "Enable Memory Sanitizer" OFF)
 option(ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
-
-if(ENABLE_ASAN)
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=address)
-endif()
 
 if(ENABLE_TSAN)
     add_compile_options(-fsanitize=thread)
     add_link_options(-fsanitize=thread)
-endif()
-
-if(ENABLE_MSAN)
-    add_compile_options(-fsanitize=memory -fPIE -pie -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=memory -fPIE -pie)
 endif()
 
 if(ENABLE_UBSAN)
@@ -106,31 +71,24 @@ endif()
 
 # Enable common warnings and build-type-specific optimizations
 if(MSVC)
-    add_compile_options(/W4 /WX)
+    add_compile_options(/W4)
+    if(XTM_WERROR)
+        add_compile_options(/WX)
+    endif()
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         add_compile_options(/O2 /Ob2 /Oi /Ot /Oy)
-    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-        add_compile_options(/O2)
     endif()
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
-    # clang -Werror: googletest printer header trips -Wcharacter-conversion
-    # (char8_t). Suppressed after the -Wall/-Wextra groups so it takes effect.
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        add_compile_options(-Wno-character-conversion)
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    if(XTM_WERROR)
+        add_compile_options(-Werror)
     endif()
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        # Per-compiler SIMD/vectorization tuning. Both GCC and clang get the
-        # native ISA explicitly; compiler-specific flags go in their branch.
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            add_compile_options(-O3 -march=native -mtune=native -fvectorize)
-        elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-            add_compile_options(-O3 -march=native -mtune=native -ftree-vectorize)
+        if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+            add_compile_options(-O3 -ftree-vectorize)
         else()
-            add_compile_options(-O3 -march=native)
+            add_compile_options(-O3 -march=native -mtune=native -ftree-vectorize)
         endif()
-    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-        add_compile_options(-O2 -march=native -fno-omit-frame-pointer)
     endif()
 endif()
 
@@ -142,6 +100,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Symlink compile_commands.json to project root for IDE/clangd compatibility
 if(CMAKE_EXPORT_COMPILE_COMMANDS)
     execute_process(
+        COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_SOURCE_DIR}/compile_commands.json
         COMMAND ${CMAKE_COMMAND} -E create_symlink
             ${CMAKE_BINARY_DIR}/compile_commands.json
             ${CMAKE_SOURCE_DIR}/compile_commands.json
@@ -149,7 +108,7 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS)
 endif()
 
 # Dependencies
-find_package(GDAL REQUIRED)
+find_package(GDAL 3.4 REQUIRED)
 find_package(Threads REQUIRED)
 
 # Library type option (controlled by BUILD_SHARED_LIBS)
@@ -161,6 +120,12 @@ file(GLOB_RECURSE XTM_CORE_SOURCES CONFIGURE_DEPENDS
 )
 
 add_library(xtm_core ${XTM_CORE_SOURCES})
+
+# Library versioning (no-op for static builds)
+set_target_properties(xtm_core PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+)
 
 target_include_directories(xtm_core
     PUBLIC
@@ -189,30 +154,71 @@ add_executable(xtm
 )
 target_link_libraries(xtm PRIVATE xtm_core Threads::Threads)
 
-# Tests
-option(BUILD_TESTS "Build unit tests" ON)
+# Python bindings (nanobind) — opt-in: -DXTM_BUILD_PYTHON=ON.
+# The module lands in ${CMAKE_BINARY_DIR}/lib; use it via
+# PYTHONPATH=<build>/lib python -c "import xtm".
+option(XTM_BUILD_PYTHON "Build Python bindings (nanobind)" OFF)
 
-if(BUILD_TESTS)
+if(XTM_BUILD_PYTHON)
+    find_package(Python 3.10 COMPONENTS Interpreter Development.Module Development.SABIModule REQUIRED)
+
+    # Prefer an installed nanobind (e.g. conda-forge); fall back to FetchContent.
+    find_package(nanobind QUIET CONFIG)
+    if(NOT nanobind_FOUND)
+        include(FetchContent)
+        FetchContent_Declare(
+            nanobind
+            GIT_REPOSITORY https://github.com/wjakob/nanobind.git
+            GIT_TAG v2.14.0
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(nanobind)
+    endif()
+
+    nanobind_add_module(xtm_python STABLE_ABI NB_SUPPRESS_WARNINGS bindings/xtm.cpp)
+    target_link_libraries(xtm_python PRIVATE xtm_core)
+    set_target_properties(xtm_python PROPERTIES
+        OUTPUT_NAME xtm
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    )
+    if(DEFINED SKBUILD)
+        # scikit-build-core: flat install at the wheel root so `import xtm` works
+        install(TARGETS xtm_python LIBRARY DESTINATION .)
+    else()
+        install(TARGETS xtm_python LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    endif()
+endif()
+
+# Tests (default OFF when embedded via add_subdirectory)
+if(NOT PROJECT_IS_TOP_LEVEL AND NOT BUILD_TESTING)
+    set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree." FORCE)
+endif()
+include(CTest)
+
+if(BUILD_TESTING)
     find_package(GTest QUIET)
     if(NOT GTest_FOUND)
         message(STATUS "GTest not found locally; fetching from GitHub...")
         include(FetchContent)
+        # Keep googletest out of our install tree
+        set(INSTALL_GTEST OFF CACHE BOOL "Enable installation of googletest." FORCE)
+        set(INSTALL_GMOCK OFF CACHE BOOL "Enable installation of gmock." FORCE)
         FetchContent_Declare(
             googletest
             GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG v1.16.0
+            GIT_TAG v1.18.0
+            GIT_SHALLOW TRUE
+            DOWNLOAD_EXTRACT_TIMESTAMP FALSE
         )
         FetchContent_MakeAvailable(googletest)
     endif()
 
-    enable_testing()
     add_subdirectory(tests)
 endif()
 
 # Install Rules
-include(GNUInstallDirs)
 
-install(TARGETS xtm_core xtm
+install(TARGETS xtm_core
     EXPORT libxtmTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -220,6 +226,43 @@ install(TARGETS xtm_core xtm
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
+install(TARGETS xtm
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
 install(DIRECTORY include/xtm/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/xtm
 )
+
+# Package config so consumers can find_package(libxtm)
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/libxtmConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+configure_package_config_file(
+    cmake/libxtmConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/libxtmConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libxtm
+)
+install(EXPORT libxtmTargets
+    FILE libxtmTargets.cmake
+    NAMESPACE libxtm::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libxtm
+)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/libxtmConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/libxtmConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libxtm
+)
+
+# Packaging (cpack -G TGZ, cpack -G DEB, ...)
+set(CPACK_PACKAGE_NAME "libxtm")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_VENDOR "libxtm project")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Lossless terrain elevation compression library")
+set(CPACK_PACKAGE_CONTACT "Yashwanth <199648454+yashwk@users.noreply.github.com>")
+set(CPACK_GENERATOR "TGZ;DEB")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libgdal32 | libgdal34 | libgdal35")
+include(CPack)
