@@ -162,7 +162,7 @@ option(XTM_BUILD_PYTHON "Build Python bindings (nanobind)" OFF)
 if(XTM_BUILD_PYTHON)
     find_package(Python 3.10 COMPONENTS Interpreter Development.Module Development.SABIModule REQUIRED)
 
-    # Prefer an installed nanobind (e.g. conda-forge); fall back to FetchContent.
+    # Prefer an already-installed nanobind; fall back to FetchContent.
     find_package(nanobind QUIET CONFIG)
     if(NOT nanobind_FOUND)
         include(FetchContent)

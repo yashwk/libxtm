@@ -39,33 +39,8 @@ Three jobs on `ubuntu-latest`:
     build, `cpack TGZ` + `DEB`
   - stage artifacts for the `publish` job
 
-- **`conda-package`**: builds `recipe/meta.yaml` via `conda build` (bindings
-  via `pip install .` in the build env; nanobind comes from conda-forge, see
-  the `find_package(nanobind)` fallback in CMakeLists) and uploads the
-  package to anaconda.org with `anaconda-client`. Users install with
-  `conda install -c yashwk libxtm`. Requires the `ANACONDA_TOKEN` secret
-  (anaconda.org API token with upload rights on your channel).
-
 - **`publish`** (only on real release events): attach `dist/*` to the GitHub
   Release and publish **wheel + sdist** to PyPI with OIDC attestations.
-
-### PyPI → conda via grayskull
-
-The recipe is **regenerated from the PyPI release**, not written by hand:
-
-1. Publish a GitHub release (`gh release create vX.Y.Z`) — publish job
-   uploads `libxtm-X.Y.Z-cp312-abi3-manylinux_2_39_x86_64.whl` and
-   `libxtm-X.Y.Z.tar.gz` to PyPI (requires trusted publishing configured on
-   the PyPI project for this repo's `Release artifacts` workflow).
-2. Regenerate the recipe:
-   `grayskull pypi libxtm --version X.Y.Z -o recipe/`
-   (parse pyproject `[project]` metadata — that's why `license`/`urls` live
-   in pyproject.toml).
-3. **Patch the generated recipe**: grayskull sees `dependencies = []` in
-   pyproject and cannot know the C++ side links GDAL — add `libgdal` to
-   `host` and `run` requirements manually.
-4. Commit, then run the release workflow (`workflow_dispatch`) so the
-   `conda-package` job builds and uploads it.
 
 ---
 
