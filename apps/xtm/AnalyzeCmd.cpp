@@ -270,7 +270,6 @@ void print_usage() {
     std::cerr << "  --compact           Only the Dataset Overview and Summary sections\n";
     std::cerr << "  --no-color          Disable ANSI colors\n";
 }
-double parse_precision(const std::string& arg);
 
 } // namespace
 
